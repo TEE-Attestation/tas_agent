@@ -1,0 +1,94 @@
+#!/bin/sh
+#
+# Copyright 2025 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+PREREQ="cloud-initramfs-dyn-netconf"
+prereqs()
+{
+    echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+# shellcheck disable=SC1091
+. /scripts/functions
+
+# Configure the network
+configure_networking
+
+    # Check if tas_agent is available
+    if [ -e /sbin/tas_agent ]; then
+        log_begin_msg "Loading kernel modules for tas_agent.."
+    count=0;
+    while true;
+    do
+       if [ $count -eq 3 ]
+       then
+	    break
+       fi
+       mount -t configfs none /sys/kernel/config
+       sleep 1
+       if [ ! -e /sys/kernel/config/tsm/report ]
+       then
+         log_begin_msg "loading tsm..."
+         modprobe tsm
+    	 sleep 5
+	     log_end_msg
+       fi
+       if [ ! -e /dev/sev-guest ]
+       then
+         log_begin_msg "loading sev-guest..."
+         modprobe sev-guest
+    	 sleep 5
+	     log_end_msg
+       else
+	 break
+       fi
+       count=$(($count + 1))
+    done
+    log_end_msg
+    if [ ! -e /etc/tas_kbm_ctl/config ]
+    then
+       log_begin_msg "/etc/tas_kbm_ctl/config DOES NOT exist"
+       log_end_msg
+    fi
+    if [ -e /sys/kernel/config/tsm/report ]
+    then
+       log_begin_msg "Loading config for TAS Agent"
+       set -a
+       . /etc/tas_agent/config
+       set +a
+       log_end_msg
+       log_begin_msg "Running TAS Agent"
+       # Capture the output of tas_agent to a variable, check return code for success
+       TAS_AGENT_OUTPUT=$(/sbin/tas_agent 2>&1)
+       TAS_AGENT_RC=$?
+       if [ $TAS_AGENT_RC -ne 0 ]; then
+           log_begin_msg "tas_agent failure:"
+           echo "$TAS_AGENT_OUTPUT"
+           log_end_msg
+       else
+           log_begin_msg "tas_agent succeeded"
+           log_end_msg
+           log_begin_msg "Mounting encrypted rootfs"
+           # Use the output from tas_agent to open the encrypted rootfs
+           echo "$TAS_AGENT_OUTPUT" | cryptsetup open --type luks --key-file - --batch-mode /dev/sda1 enc-rootfs
+           if [ $? -ne 0 ]; then
+              log_begin_msg "Failed to open encrypted rootfs rc = $?"
+              log_end_msg
+           fi
+           log_end_msg
+       fi
+       log_end_msg
+    else
+      log_begin_msg "*** FAILURE: TAS Agent cannot run ***"
+      log_end_msg
+    fi
+
+fi
+exit 0

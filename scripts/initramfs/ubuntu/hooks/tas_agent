@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Copyright 2025 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+PREREQ="cloud-initramfs-dyn-netconf"
+prereqs()
+{
+  echo "$PREREQ"
+}
+				
+case $1 in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+				
+. /usr/share/initramfs-tools/hook-functions
+# Begin real processing below this line
+				
+# Copy the binary 
+copy_exec /sbin/tas_agent
+
+# Copy the config files 
+copy_file config /etc/tas_agent/config /etc/tas_agent/config
+copy_file config /etc/tas_agent/root_cert.pem /etc/tas_agent/root_cert.pem
+
+exit 0
