@@ -16,9 +16,9 @@ rsa = { version = "0.9.8", features = ["sha2"] }
 rand = "~0.8"
 aes = "0.8.4"
 cipher = { version = "0.4.4", features = ["block-padding", "alloc"] }
-cbc = "0.1.2"
 pretty-hex = "0.4.1"
 serde = { version = "1.0.219", features = ["derive", "serde_derive"] }
+aes-gcm = "0.10.3"
 
 [dev-dependencies]
 mockito = "0.31"
