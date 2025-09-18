@@ -16,6 +16,8 @@ pub struct SecretsPayload {
     pub blob: Vec<u8>,
     #[serde(deserialize_with = "deserialize_base64")]
     pub iv: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_base64")]
+    pub tag: Vec<u8>,
 }
 
 fn deserialize_base64<'de, D, T>(d: D) -> Result<T, D::Error>
