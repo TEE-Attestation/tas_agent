@@ -5,24 +5,23 @@
 //
 // This module provides the client application with the ability do cryptographic operations.
 
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use base64::Engine;
 use rsa::{
     pkcs1::EncodeRsaPrivateKey, pkcs1::EncodeRsaPublicKey, sha2::Sha256, Oaep, RsaPrivateKey,
     RsaPublicKey,
 };
 
-use std::error::Error;
+use aes_gcm::{
+    aead::{AeadInPlace, KeyInit},
+    Aes256Gcm, Nonce,
+};
 
-type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+use std::error::Error;
 
 //TODO: Add own error type, instead of using Box<dyn Error>
 //TODO: Add logging
 //TODO: Add tests
 //TODO: Add documentation
-//TODO: Switch to  OAEP padding scheme.
-//      This will require a change in the KMIP server to use the same padding scheme.
 
 #[derive(Debug, Clone)]
 
@@ -113,22 +112,24 @@ pub fn decrypt_secret_with_aes_key(
     aes_key: &[u8],
     iv: &[u8],
     ciphertext: &mut [u8],
+    tag: &[u8],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    // AES-256-CBC decryption
+    // AES-256-GCM decryption
     // Check if the key length is 32 bytes (256 bits)
     if aes_key.len() != 32 {
         return Err("AES key length must be 32 bytes (256 bits)".into());
     }
     // Check if the IV length is 16 bytes (128 bits)
-    if iv.len() != 16 {
-        return Err("AES IV length must be 16 bytes (128 bits)".into());
+    if iv.len() != 12 {
+        return Err("AES-GCM IV length must be 16 bytes (128 bits)".into());
     }
 
-    let cipher = Aes256CbcDec::new_from_slices(aes_key, iv)?;
-    let decrypted_data = cipher
-        .decrypt_padded_mut::<Pkcs7>(ciphertext)
+    let cipher = Aes256Gcm::new_from_slice(aes_key)?;
+    let nonce = Nonce::from_slice(iv);
+    cipher
+        .decrypt_in_place_detached(nonce, b"", ciphertext, tag.into())
         .map_err(|e| format!("Decryption error: {:?}", e))?;
-    Ok(decrypted_data.to_vec())
+    Ok(ciphertext.to_vec())
 }
 
 #[allow(dead_code)]
@@ -136,21 +137,23 @@ pub fn encrypt_secret_with_aes_key(
     aes_key: &[u8],
     iv: &[u8],
     plaintext: &mut [u8],
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    // AES-256-CBC encryption
-    let cipher = Aes256CbcEnc::new_from_slices(aes_key, iv)?;
+) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+    // AES-256-GCM encryption
     // Check if the key length is 32 bytes (256 bits)
     if aes_key.len() != 32 {
         return Err("AES key length must be 32 bytes (256 bits)".into());
     }
-    // Check if the IV length is 16 bytes (128 bits)
-    if iv.len() != 16 {
-        return Err("AES IV length must be 16 bytes (128 bits)".into());
+    // Check if the IV (nonce) length is 12 bytes (96 bits) for GCM
+    if iv.len() != 12 {
+        return Err("AES-GCM IV length must be 12 bytes (96 bits)".into());
     }
-    let ciphertext = cipher.encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let cipher = Aes256Gcm::new_from_slice(aes_key)?;
+    let nonce = Nonce::from_slice(iv);
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, b"", plaintext)
+        .map_err(|e| format!("Encryption error: {:?}", e))?;
 
-    println!("ciphertext: {:?}", ciphertext);
-    Ok(ciphertext.to_vec())
+    Ok((plaintext.to_vec(), tag.to_vec()))
 }
 
 //add tests
@@ -170,11 +173,12 @@ mod tests {
     #[test]
     fn test_aes_decryption() {
         let aes_key = [0u8; 32]; // 256-bit key
-        let iv = [0u8; 16]; // 128-bit IV
-        let mut plaintext = b"Hello, world!".to_vec();
-        let ciphertext = encrypt_secret_with_aes_key(&aes_key, &iv, &mut plaintext).unwrap();
+        let iv = [0u8; 12]; // 96-bit IV (nonce) for AES-GCM
+        let  plaintext = b"Hello, world!".to_vec();
+        let (mut ciphertext, tag) =
+            encrypt_secret_with_aes_key(&aes_key, &iv, &mut plaintext.clone()).unwrap();
         let decrypted_data =
-            decrypt_secret_with_aes_key(&aes_key, &iv, &mut ciphertext.clone()).unwrap();
+            decrypt_secret_with_aes_key(&aes_key, &iv, &mut ciphertext, &tag).unwrap();
         assert_eq!(b"Hello, world!".to_vec(), decrypted_data);
     }
 }

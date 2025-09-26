@@ -131,9 +131,8 @@ async fn main() {
         Err(err) => {
             eprintln!("JSON Deserialize Error: {}", err);
             std::process::exit(1);
-        }       
+        }
     };
-
 
     // Unwrap the secret key using the wrapping key
     debug_println!(debug, "Unwrapping secret key...");
@@ -149,7 +148,7 @@ async fn main() {
     // Decrypt the secret payload using the unwrapped AES key
     debug_println!(debug, "Decrypting secret payload...");
     let decrypted_payload =
-        match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob) {
+        match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag) {
             Ok(decrypted_payload) => decrypted_payload,
             Err(err) => {
                 eprintln!("Crypto Decrypt Error: {}", err);
@@ -157,6 +156,4 @@ async fn main() {
             }
         };
     println!("{}", String::from_utf8_lossy(&decrypted_payload));
-
-
 }
