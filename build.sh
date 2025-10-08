@@ -2,11 +2,12 @@
 #
 # Copyright 2025 Hewlett Packard Enterprise Development LP.
 # SPDX-License-Identifier: MIT
-# Usage: ./build.sh [-d DESTDIR]
+# Usage: ./build.sh [-d DESTDIR] [-r ROOTCERT]
 #        ./build.sh [-h]
 #
 # Options:
 #   -d DESTDIR   Set the destination directory for the package (default: ./target/package)
+#   -r ROOTCERT  Set the TAS root cert
 #   -h           Show this help message and exit
 
 show_help() {
@@ -14,16 +15,19 @@ show_help() {
     echo "       $0 [-h]"
     echo
     echo "Options:"
-    echo "  -d DESTDIR   Set the destination directory for the package (default: ./target/package)"
-    echo "  -h           Show this help message and exit"
+    echo "  -d DESTDIR    Set the destination directory for the package (default: ./target/package)"
+    echo "  -r ROOTCERT   Set the TAS root cert"
+    echo "  -h            Show this help message and exit"
 }
 
 DESTDIR="./target/package"
+ROOTCERT="./config/root_cert.pem"
 
 # Parse command line options
-while getopts "d:h" opt; do
+while getopts "d:r:h" opt; do
     case "$opt" in
         d) DESTDIR="$OPTARG" ;;
+        r) ROOTCERT="$OPTARG" ;;
         h)
             show_help
             exit 0
@@ -104,7 +108,12 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-cp config/ThalesCTM-Local-RootCA.pem "$FINAL_DIR/etc/tas_agent/root_cert.pem"
+# Copy the root certificate to the final directory
+if [ ! -f "$ROOTCERT" ]; then
+    echo "Root certificate not found: $ROOTCERT"
+    exit 1
+fi
+cp "$ROOTCERT" "$FINAL_DIR/etc/tas_agent/root_cert.pem"
 if [ $? -ne 0 ]; then
     echo "Failed to copy root_cert.pem to $FINAL_DIR/etc/tas_agent/root_cert.pem. Please check the build process."
     exit 1
