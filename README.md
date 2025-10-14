@@ -48,4 +48,5 @@ Example output:
 Key-ID: 771e76e7924348899ef751d0754c9060dd805928d03043f29a065275f4f883c8
 Value: "30786465616462656566"
 ```
-
+## Contributing
+Contributing to the project is simple! Just send a pull request through GitHub. For detailed instructions on formatting your changes and following our contribution guidelines, take a look at the [CONTRIBUTING](./CONTRIBUTING.md) file.
