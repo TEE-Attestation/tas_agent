@@ -44,7 +44,7 @@ The **name and email** in the `Signed-off-by` tag must match the **Author** fiel
 
 ### Coding Style
 
-- **Code Formatting**: tas_agent uses `rustfmt`, `cargo` and `clippy` to enforce a consistent code style. We provide a [pre-commit](https://pre-commit.com/) configuration to enforce the code style locally. Our CI will check if the code is formatted correctly. Refer to the [pre-commit](https://pre-commit.com/) website for installation and usage instructions. <!--Ensure you use the versions specified in our [.pre-commit-config.yaml](.pre-commit-config.yaml). -->
+- **Code Formatting**: tas_agent uses `rustfmt`, `cargo` and `clippy` to enforce a consistent code style. We provide a [pre-commit](https://pre-commit.com/) configuration to enforce the code style locally. Our CI will check if the code is formatted correctly. Refer to the [pre-commit](https://pre-commit.com/) website for installation and usage instructions. Ensure you use the versions specified in our [.pre-commit-config.yaml](.pre-commit-config.yaml).
 
    For documentation guidelines consult https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html
 
