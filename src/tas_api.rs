@@ -98,6 +98,7 @@ pub async fn tas_get_nonce(
 }
 
 /// Function to make the POST request to the get_secret API and return the secret key
+#[allow(clippy::too_many_arguments)]
 pub async fn tas_get_secret_key(
     server_uri: &str,
     api_key: &str,

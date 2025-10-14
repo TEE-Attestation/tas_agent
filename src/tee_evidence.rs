@@ -8,7 +8,6 @@
 // TEE Evidence gathering functionality.
 //
 use base64::{engine::general_purpose, Engine};
-use hex;
 use std::error::Error;
 use std::fs;
 use tempfile::tempdir_in;

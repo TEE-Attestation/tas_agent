@@ -174,7 +174,7 @@ mod tests {
     fn test_aes_decryption() {
         let aes_key = [0u8; 32]; // 256-bit key
         let iv = [0u8; 12]; // 96-bit IV (nonce) for AES-GCM
-        let  plaintext = b"Hello, world!".to_vec();
+        let plaintext = b"Hello, world!".to_vec();
         let (mut ciphertext, tag) =
             encrypt_secret_with_aes_key(&aes_key, &iv, &mut plaintext.clone()).unwrap();
         let decrypted_data =
