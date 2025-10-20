@@ -4,10 +4,12 @@
 // SPDX-License-Identifier: MIT
 //
 // This application interacts via a REST API with the TEE Attestation Service Key Broker Module.
-// It gathers TEE Evidence from the platform and sends it to the TEE Attestation Service for verification.
-// Upon successful verification, it retrieves the TEE Attestation Service's key to enable the mounting of a LUKS volume.
 //
-// The application is designed to be run as a standalone executable and can be used for testing and demonstration purposes.
+// It gathers TEE Evidence from the platform and sends it to the TEE Attestation Service for
+// verification. Upon successful verification, it retrieves the TEE Attestation Service's key
+// to enable the mounting of a LUKS volume, for example.
+//
+// The application is designed to be run as a standalone executable.
 //
 
 use pretty_hex::PrettyHex;
