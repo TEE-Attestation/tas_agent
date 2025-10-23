@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-checks:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    
+    - name: Build debug image 
+      run: cargo build
+
+    - name: Build release image 
+      run: cargo build --release
+
+    - name: Run tests on debug image
+      run: cargo test
+
+    - name: Run tests on release image
+      run: cargo test --release
+
+    - name: Build via script
+      run: |
+         touch ./config/root_cert.pem
+         ./build.sh
+    - name: Build docs
+      run: cargo doc --no-deps
+    
