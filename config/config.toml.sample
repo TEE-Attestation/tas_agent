@@ -1,0 +1,12 @@
+
+# The URI of the TAS REST service
+server_uri = "http://X.X.X.X:5000"
+
+# Path to the API key for the TAS REST service
+api_key = "/etc/tas_agent/api-key"
+
+# Path to the CA root certificate signing the TAS REST service cert
+cert_path = "/etc/tas_agent/root_cert.pem"
+
+# ID of the key to request from the TAS REST service
+key_id = "..."
