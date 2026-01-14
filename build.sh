@@ -17,17 +17,20 @@ show_help() {
     echo "Options:"
     echo "  -d DESTDIR    Set the destination directory for the package (default: ./target/package)"
     echo "  -r ROOTCERT   Set the TAS root cert"
+    echo "  -e CONFIG     Set the TAS config file"
     echo "  -h            Show this help message and exit"
 }
 
 DESTDIR="./target/package"
 ROOTCERT="./config/root_cert.pem"
+CONFIG=".env"
 
 # Parse command line options
 while getopts "d:r:h" opt; do
     case "$opt" in
         d) DESTDIR="$OPTARG" ;;
         r) ROOTCERT="$OPTARG" ;;
+        e) CONFIG="$OPTARG" ;;
         h)
             show_help
             exit 0
@@ -102,9 +105,9 @@ fi
 
 # Copy the config files to the final directory
 mkdir -p "$FINAL_DIR/etc/tas_agent"
-cp .env "$FINAL_DIR/etc/tas_agent/config"
+cp $CONFIG "$FINAL_DIR/etc/tas_agent/config"
 if [ $? -ne 0 ]; then
-    echo "Failed to copy config file to $FINAL_DIR/etc/tas_agent/config. Please check the build process."
+    echo "Failed to copy config file $CONFIG to $FINAL_DIR/etc/tas_agent/config. Please check the build process."
     exit 1
 fi
 
