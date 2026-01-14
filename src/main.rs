@@ -129,21 +129,37 @@ async fn main() {
             .unwrap_or(PathBuf::from("/etc/tas_agent/root_cert.pem".to_string()))
     });
 
-    let api_key = read_to_string(api_key_path.clone())
-        .expect(&format!("unable to read API key from {:?}", api_key_path));
+    let api_key = match read_to_string(api_key_path.clone()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("unable to read API key from {:?}: {}", api_key_path, e);
+            std::process::exit(1)
+        }
+    };
 
     // Generate a wrapping key for the HSM to wrap the secret key with
     debug_println!(cli.debug, "Generating wrapping key...");
-    let rsa_wrapping_key = generate_wrapping_key().expect("Failed to generate wrapping key");
+    let rsa_wrapping_key = match generate_wrapping_key() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("failed to generate wrapping key: {}", e);
+            std::process::exit(1);
+        }
+    };
     debug_println!(
         cli.debug,
         "\nGenerated wrapping key: {}\n",
         rsa_wrapping_key
     );
 
-    let wrapping_key = rsa_wrapping_key
-        .public_key_to_base64()
-        .expect("Failed to convert wrapping key to DER base64");
+    let wrapping_key = match rsa_wrapping_key.public_key_to_base64() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("failed to convert wrapping key to DER base64: {}", e);
+            std::process::exit(1)
+        }
+    };
+
     debug_println!(
         cli.debug,
         "Base64-encoded public wrapping key: {}\n",
