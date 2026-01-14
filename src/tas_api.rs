@@ -10,9 +10,10 @@
 use reqwest::{Certificate, Client};
 use serde_json::Value;
 use std::fs;
+use std::path::PathBuf;
 
 /// Helper function to create a `reqwest::Client` with a custom root certificate
-fn create_client_with_root_cert(cert_path: &str) -> Result<Client, String> {
+fn create_client_with_root_cert(cert_path: PathBuf) -> Result<Client, String> {
     // Load the root certificate from the specified file
     let cert_data =
         fs::read(cert_path).map_err(|err| format!("Error reading certificate file: {}", err))?;
@@ -31,7 +32,7 @@ fn create_client_with_root_cert(cert_path: &str) -> Result<Client, String> {
 pub async fn tas_get_version(
     server_uri: &str,
     api_key: &str,
-    cert_path: &str,
+    cert_path: PathBuf,
 ) -> Result<String, String> {
     let version_url = format!("{}/version", server_uri);
     let client = create_client_with_root_cert(cert_path)?;
@@ -66,7 +67,7 @@ pub async fn tas_get_version(
 pub async fn tas_get_nonce(
     server_uri: &str,
     api_key: &str,
-    cert_path: &str,
+    cert_path: PathBuf,
 ) -> Result<String, String> {
     let nonce_url = format!("{}/kb/v0/get_nonce", server_uri);
     let client = create_client_with_root_cert(cert_path)?;
@@ -107,7 +108,7 @@ pub async fn tas_get_secret_key(
     tee_type: &str,
     key_id: &str,
     wrapping_key: &str,
-    cert_path: &str,
+    cert_path: PathBuf,
 ) -> Result<String, String> {
     let secret_url = format!("{}/kb/v0/get_secret", server_uri);
     let client = create_client_with_root_cert(cert_path)?;
@@ -222,7 +223,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_version(&server_uri, api_key, cert_path).await;
 
         assert_eq!(result.unwrap(), "\"1.2.3\"");
@@ -239,7 +240,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
 
         assert_eq!(result.unwrap(), "\"abc123\"");
@@ -261,7 +262,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let key_id = "key123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_secret_key(
             &server_uri,
             api_key,
@@ -296,7 +297,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_version(&server_uri, api_key, cert_path).await;
 
         // Assert the result
@@ -325,7 +326,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_version(&server_uri, api_key, cert_path).await;
 
         // Assert the result
@@ -351,8 +352,8 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
-        println!("cert_path: {}", cert_path);
+        let cert_path = cert_file.path().to_path_buf();
+        println!("cert_path: {:?}", cert_path);
         println!("server_uri: {}", server_uri);
         let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
 
@@ -382,7 +383,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let server_uri = server_url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
 
         // Assert the result
@@ -407,7 +408,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let key_id = "key123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_secret_key(
             &server_uri,
             api_key,
@@ -445,7 +446,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let key_id = "key123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
-        let cert_path = cert_file.path().to_str().unwrap();
+        let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_secret_key(
             &server_uri,
             api_key,
