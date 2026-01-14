@@ -72,7 +72,8 @@ async fn main() {
         env::var("TAS_SERVER_API_KEY").unwrap_or("/etc/tas_agent/api_key".to_string()),
     );
     let key_id = env::var("TAS_KEY_ID").expect("TAS_KEY_ID must be set");
-    let cert_path = env::var("TAS_SERVER_ROOT_CERT").expect("TAS_SERVER_ROOT_CERT must be set");
+    let cert_path =
+        env::var("TAS_SERVER_ROOT_CERT").unwrap_or("/etc/tas_agent/root_cert.pem".to_string());
 
     let api_key = read_to_string(api_key_path.clone())
         .expect(&format!("unable to read API key from {:?}", api_key_path));
