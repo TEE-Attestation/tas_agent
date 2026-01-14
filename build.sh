@@ -23,7 +23,7 @@ show_help() {
 
 DESTDIR="./target/package"
 ROOTCERT="./config/root_cert.pem"
-CONFIG=".env"
+CONFIG="./config/config.toml.sample"
 APIKEY="./config/api-key.sample"
 
 # Parse command line options
@@ -107,9 +107,9 @@ fi
 
 # Copy the config files to the final directory
 mkdir -p "$FINAL_DIR/etc/tas_agent"
-cp $CONFIG "$FINAL_DIR/etc/tas_agent/config"
+cp $CONFIG "$FINAL_DIR/etc/tas_agent/config.toml"
 if [ $? -ne 0 ]; then
-    echo "Failed to copy config file $CONFIG to $FINAL_DIR/etc/tas_agent/config. Please check the build process."
+    echo "Failed to copy config file $CONFIG to $FINAL_DIR/etc/tas_agent/config.toml. Please check the build process."
     exit 1
 fi
 

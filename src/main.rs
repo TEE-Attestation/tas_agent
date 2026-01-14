@@ -13,7 +13,6 @@
 //
 
 use pretty_hex::PrettyHex;
-use std::env;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
@@ -22,7 +21,9 @@ mod crypto;
 mod tas_api;
 mod tee_evidence;
 mod utils;
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use serde::Deserialize;
 
 use crypto::{decrypt_secret_with_aes_key, generate_wrapping_key};
 use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version};
@@ -45,7 +46,7 @@ struct Cli {
     #[arg(short, long)]
     debug: bool,
 
-    /// Path to the config file (default: '/etc/tas_agent/config')
+    /// Path to the config file (default: '/etc/tas_agent/config.toml')
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
 
@@ -66,41 +67,66 @@ struct Cli {
     cert_path: Option<PathBuf>,
 }
 
+#[derive(Deserialize, Default)]
+struct Config {
+    server_uri: Option<String>,
+    api_key: Option<PathBuf>,
+    key_id: Option<String>,
+    cert_path: Option<PathBuf>,
+}
+
+fn load_config(path: Option<PathBuf>) -> Result<Config> {
+    let config_path = path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/config.toml"));
+    if !config_path.exists() {
+        if path.is_some() {
+            return Err(anyhow!("config file {:?} does not exist", config_path));
+        }
+        return Ok(Config::default());
+    }
+
+    let data = std::fs::read_to_string(config_path.clone())
+        .with_context(|| format!("unable to read {:?}", config_path))?;
+
+    toml::from_str(&data).with_context(|| format!("unable to load {:?}", config_path))
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Load environment variables from a `.env` file or the system environment
-    match cli.config {
-        Some(path) => {
-            if !path.exists() {
-                eprintln!("config file {:?} does not exist", path);
-                std::process::exit(1);
-            }
-            dotenv::from_path(path).ok()
+    let cfg = match load_config(cli.config) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("{:#}", e);
+            std::process::exit(1);
         }
-        None => dotenv::from_path("/etc/tas_agent/config").ok(),
     };
 
     // Retrieve the REST server URI, API key, key ID, and root certificate path from
     // command line, falling back to environment variables if not given
-    let server_uri = cli
-        .server_uri
-        .unwrap_or_else(|| env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set"));
+    let server_uri = cli.server_uri.unwrap_or_else(|| {
+        cfg.server_uri.unwrap_or_else(|| {
+            eprintln!("server URI is required");
+            std::process::exit(1)
+        })
+    });
 
     let api_key_path = cli.api_key.unwrap_or_else(|| {
-        PathBuf::from(
-            env::var("TAS_SERVER_API_KEY").unwrap_or("/etc/tas_agent/api_key".to_string()),
-        )
+        cfg.api_key
+            .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/api_key".to_string()))
     });
-    let key_id = cli
-        .key_id
-        .unwrap_or_else(|| env::var("TAS_KEY_ID").expect("TAS_KEY_ID must be set"));
+    let key_id = cli.key_id.unwrap_or_else(|| {
+        cfg.key_id.unwrap_or_else(|| {
+            eprintln!("server key ID is required");
+            std::process::exit(1)
+        })
+    });
 
     let cert_path = cli.cert_path.unwrap_or_else(|| {
-        PathBuf::from(
-            env::var("TAS_SERVER_ROOT_CERT").unwrap_or("/etc/tas_agent/root_cert.pem".to_string()),
-        )
+        cfg.cert_path
+            .unwrap_or(PathBuf::from("/etc/tas_agent/root_cert.pem".to_string()))
     });
 
     let api_key = read_to_string(api_key_path.clone())
