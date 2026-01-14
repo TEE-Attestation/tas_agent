@@ -48,6 +48,22 @@ struct Cli {
     /// Path to the config file (default: '/etc/tas_agent/config')
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    /// The URI of the TAS REST service
+    #[arg(long, value_name = "URI")]
+    server_uri: Option<String>,
+
+    /// Path to the API key for the TAS REST service
+    #[arg(long, value_name = "FILE")]
+    api_key: Option<PathBuf>,
+
+    /// ID of the key to request from the TAS REST service
+    #[arg(long, value_name = "ID")]
+    key_id: Option<String>,
+
+    /// Path to the CA root certificate signing the TAS REST service cert
+    #[arg(long, value_name = "FILE")]
+    cert_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -66,15 +82,26 @@ async fn main() {
         None => dotenv::from_path("/etc/tas_agent/config").ok(),
     };
 
-    // Retrieve the REST server URI, API key, key ID, and root certificate path from environment variables
-    let server_uri = env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set");
-    let api_key_path = PathBuf::from(
-        env::var("TAS_SERVER_API_KEY").unwrap_or("/etc/tas_agent/api_key".to_string()),
-    );
-    let key_id = env::var("TAS_KEY_ID").expect("TAS_KEY_ID must be set");
-    let cert_path = PathBuf::from(
-        env::var("TAS_SERVER_ROOT_CERT").unwrap_or("/etc/tas_agent/root_cert.pem".to_string()),
-    );
+    // Retrieve the REST server URI, API key, key ID, and root certificate path from
+    // command line, falling back to environment variables if not given
+    let server_uri = cli
+        .server_uri
+        .unwrap_or_else(|| env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set"));
+
+    let api_key_path = cli.api_key.unwrap_or_else(|| {
+        PathBuf::from(
+            env::var("TAS_SERVER_API_KEY").unwrap_or("/etc/tas_agent/api_key".to_string()),
+        )
+    });
+    let key_id = cli
+        .key_id
+        .unwrap_or_else(|| env::var("TAS_KEY_ID").expect("TAS_KEY_ID must be set"));
+
+    let cert_path = cli.cert_path.unwrap_or_else(|| {
+        PathBuf::from(
+            env::var("TAS_SERVER_ROOT_CERT").unwrap_or("/etc/tas_agent/root_cert.pem".to_string()),
+        )
+    });
 
     let api_key = read_to_string(api_key_path.clone())
         .expect(&format!("unable to read API key from {:?}", api_key_path));
