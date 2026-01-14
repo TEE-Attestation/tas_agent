@@ -14,6 +14,7 @@
 
 use pretty_hex::PrettyHex;
 use std::env;
+use std::path::PathBuf;
 
 // Import the `tee_get_evidence` function from the `tee_evidence` module
 mod crypto;
@@ -42,6 +43,10 @@ struct Cli {
     /// Display debugging messages
     #[arg(short, long)]
     debug: bool,
+
+    /// Path to the config file (default: '/etc/tas_agent/config')
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -49,7 +54,16 @@ async fn main() {
     let cli = Cli::parse();
 
     // Load environment variables from a `.env` file or the system environment
-    dotenv::from_path("/etc/tas_agent/config").ok();
+    match cli.config {
+        Some(path) => {
+            if !path.exists() {
+                eprintln!("config file {:?} does not exist", path);
+                std::process::exit(1);
+            }
+            dotenv::from_path(path).ok()
+        }
+        None => dotenv::from_path("/etc/tas_agent/config").ok(),
+    };
 
     // Retrieve the REST server URI, API key, key ID, and root certificate path from environment variables
     let server_uri = env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set");
