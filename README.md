@@ -29,9 +29,13 @@ The required environment variables can also be exported in a script that calls t
 The mandatory environment variables are as follows:
 
 - `TAS_SERVER_URI=http://<IP address of TAS>:<Port number of TAS>`
-- `TAS_SERVER_API_KEY=<API key setup for TAS>`
 - `TAS_SERVER_ROOT_CERT=<TAS Server Root Certificate>`
 - `TAS_KEY_ID=<KMIP ID of secret required>`
+
+The API key default path is `/etc/tas_agent/api-key`, but this can
+be overridden with:
+
+- `TAS_SERVER_API_KEY=<Path to file containing API key for TAS>`
 
 If using TLS, ensure that TAS_SERVER_URI has specified 'https'.
 Set the 'TAS_SERVER_ROOT_CERT' environment variable to the path location of the Root Certificate.

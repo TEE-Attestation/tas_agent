@@ -14,6 +14,7 @@
 
 use pretty_hex::PrettyHex;
 use std::env;
+use std::fs::read_to_string;
 use std::path::PathBuf;
 
 // Import the `tee_get_evidence` function from the `tee_evidence` module
@@ -67,9 +68,14 @@ async fn main() {
 
     // Retrieve the REST server URI, API key, key ID, and root certificate path from environment variables
     let server_uri = env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set");
-    let api_key = env::var("TAS_SERVER_API_KEY").expect("TAS_SERVER_API_KEY must be set");
+    let api_key_path = PathBuf::from(
+        env::var("TAS_SERVER_API_KEY").unwrap_or("/etc/tas_agent/api_key".to_string()),
+    );
     let key_id = env::var("TAS_KEY_ID").expect("TAS_KEY_ID must be set");
     let cert_path = env::var("TAS_SERVER_ROOT_CERT").expect("TAS_SERVER_ROOT_CERT must be set");
+
+    let api_key = read_to_string(api_key_path.clone())
+        .expect(&format!("unable to read API key from {:?}", api_key_path));
 
     // Generate a wrapping key for the HSM to wrap the secret key with
     debug_println!(cli.debug, "Generating wrapping key...");
