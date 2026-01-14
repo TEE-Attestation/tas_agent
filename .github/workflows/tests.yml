@@ -32,6 +32,7 @@ jobs:
     - name: Build via script
       run: |
          touch ./config/root_cert.pem
+         touch ./config/api-key
          ./build.sh
     - name: Build docs
       run: cargo doc --no-deps

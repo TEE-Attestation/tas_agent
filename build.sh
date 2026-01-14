@@ -24,6 +24,7 @@ show_help() {
 DESTDIR="./target/package"
 ROOTCERT="./config/root_cert.pem"
 CONFIG=".env"
+APIKEY="./config/api-key.sample"
 
 # Parse command line options
 while getopts "d:r:h" opt; do
@@ -31,6 +32,7 @@ while getopts "d:r:h" opt; do
         d) DESTDIR="$OPTARG" ;;
         r) ROOTCERT="$OPTARG" ;;
         e) CONFIG="$OPTARG" ;;
+        a) APIKEY="$OPTARG" ;;
         h)
             show_help
             exit 0
@@ -108,6 +110,12 @@ mkdir -p "$FINAL_DIR/etc/tas_agent"
 cp $CONFIG "$FINAL_DIR/etc/tas_agent/config"
 if [ $? -ne 0 ]; then
     echo "Failed to copy config file $CONFIG to $FINAL_DIR/etc/tas_agent/config. Please check the build process."
+    exit 1
+fi
+
+cp $APIKEY "$FINAL_DIR/etc/tas_agent/api-key"
+if [ $? -ne 0 ]; then
+    echo "Failed to copy API key $APIKEY to $FINAL_DIR/etc/tas_agent/api-key. Please check the build process."
     exit 1
 fi
 
