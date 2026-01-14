@@ -20,6 +20,7 @@ mod crypto;
 mod tas_api;
 mod tee_evidence;
 mod utils;
+use clap::Parser;
 
 use crypto::{decrypt_secret_with_aes_key, generate_wrapping_key};
 use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version};
@@ -35,13 +36,20 @@ macro_rules! debug_println {
     };
 }
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Display debugging messages
+    #[arg(short, long)]
+    debug: bool,
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
     // Load environment variables from a `.env` file or the system environment
     dotenv::from_path("/etc/tas_agent/config").ok();
-
-    // Check if the debug flag (-d) is passed as a command-line argument
-    let debug = env::args().any(|arg| arg == "-d");
 
     // Retrieve the REST server URI, API key, key ID, and root certificate path from environment variables
     let server_uri = env::var("TAS_SERVER_URI").expect("TAS_SERVER_URI must be set");
@@ -50,22 +58,26 @@ async fn main() {
     let cert_path = env::var("TAS_SERVER_ROOT_CERT").expect("TAS_SERVER_ROOT_CERT must be set");
 
     // Generate a wrapping key for the HSM to wrap the secret key with
-    debug_println!(debug, "Generating wrapping key...");
+    debug_println!(cli.debug, "Generating wrapping key...");
     let rsa_wrapping_key = generate_wrapping_key().expect("Failed to generate wrapping key");
-    debug_println!(debug, "\nGenerated wrapping key: {}\n", rsa_wrapping_key);
+    debug_println!(
+        cli.debug,
+        "\nGenerated wrapping key: {}\n",
+        rsa_wrapping_key
+    );
 
     let wrapping_key = rsa_wrapping_key
         .public_key_to_base64()
         .expect("Failed to convert wrapping key to DER base64");
     debug_println!(
-        debug,
+        cli.debug,
         "Base64-encoded public wrapping key: {}\n",
         wrapping_key
     );
 
     // Call the function to get the TAS server version
     match tas_get_version(&server_uri, &api_key, &cert_path).await {
-        Ok(version) => debug_println!(debug, "TEE Attestation Server Version: {}", version),
+        Ok(version) => debug_println!(cli.debug, "TEE Attestation Server Version: {}", version),
         Err(err) => {
             eprintln!("TAS Version Error: {}", err);
             std::process::exit(1);
@@ -75,7 +87,7 @@ async fn main() {
     // Call the function to get the nonce from the TAS server
     let nonce = match tas_get_nonce(&server_uri, &api_key, &cert_path).await {
         Ok(nonce) => {
-            debug_println!(debug, "Nonce: {}", nonce);
+            debug_println!(cli.debug, "Nonce: {}", nonce);
             nonce
         }
         Err(err) => {
@@ -85,14 +97,14 @@ async fn main() {
     };
 
     // Generate the TEE evidence and get the TEE type using the nonce
-    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce, debug) {
+    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce, cli.debug) {
         Ok((evidence, tee_type)) => {
             debug_println!(
-                debug,
+                cli.debug,
                 "Generated TEE Evidence (Base64-encoded): {}",
                 evidence
             );
-            debug_println!(debug, "TEE Type: {}", tee_type);
+            debug_println!(cli.debug, "TEE Type: {}", tee_type);
             (evidence, tee_type)
         }
         Err(err) => {
@@ -115,7 +127,7 @@ async fn main() {
     .await
     {
         Ok(secret_key) => {
-            debug_println!(debug, "Secret Key/Payload: {}", secret_key);
+            debug_println!(cli.debug, "Secret Key/Payload: {}", secret_key);
             secret_key
         }
         Err(err) => {
@@ -127,7 +139,7 @@ async fn main() {
     // Deserialize the base64-encoded secret payload
     let mut secret: SecretsPayload = match serde_json::from_str(&secret_string) {
         Ok(secret) => {
-            debug_println!(debug, "Deserialized secret payload: {:?}", secret);
+            debug_println!(cli.debug, "Deserialized secret payload: {:?}", secret);
             secret
         }
         Err(err) => {
@@ -137,7 +149,7 @@ async fn main() {
     };
 
     // Unwrap the secret key using the wrapping key
-    debug_println!(debug, "Unwrapping secret key...");
+    debug_println!(cli.debug, "Unwrapping secret key...");
     let aes_key = match rsa_wrapping_key.unwrap_key(&secret.wrapped_key) {
         Ok(aes_key) => aes_key,
         Err(err) => {
@@ -145,10 +157,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    debug_println!(debug, "Unwrapped secret key: {:?}", aes_key.hex_dump());
+    debug_println!(cli.debug, "Unwrapped secret key: {:?}", aes_key.hex_dump());
 
     // Decrypt the secret payload using the unwrapped AES key
-    debug_println!(debug, "Decrypting secret payload...");
+    debug_println!(cli.debug, "Decrypting secret payload...");
     let decrypted_payload =
         match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag) {
             Ok(decrypted_payload) => decrypted_payload,
