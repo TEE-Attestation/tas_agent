@@ -12,6 +12,8 @@
 // The application is designed to be run as a standalone executable.
 //
 
+use chrono::Utc;
+use log::{debug, Level, LevelFilter, Metadata, Record};
 use pretty_hex::PrettyHex;
 use std::fs::read_to_string;
 use std::path::PathBuf;
@@ -30,13 +32,21 @@ use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version};
 use tee_evidence::tee_get_evidence;
 use utils::SecretsPayload;
 
-/// Prints debug messages to stdout if the debug flag (-d) is enabled.
-macro_rules! debug_println {
-    ($debug:expr, $($arg:tt)*) => {
-        if $debug {
-            println!($($arg)*);
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Debug
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            let now = Utc::now().to_rfc3339();
+            eprintln!("{} {} - {}", now, record.level(), record.args());
         }
-    };
+    }
+
+    fn flush(&self) {}
 }
 
 #[derive(Parser)]
@@ -92,9 +102,16 @@ fn load_config(path: Option<PathBuf>) -> Result<Config> {
     toml::from_str(&data).with_context(|| format!("unable to load {:?}", config_path))
 }
 
+static LOGGER: SimpleLogger = SimpleLogger;
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Check if the debug flag (-d) is passed as a command-line argument
+    if cli.debug {
+        let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Debug));
+    }
 
     let cfg = match load_config(cli.config) {
         Ok(cfg) => cfg,
@@ -138,7 +155,7 @@ async fn main() {
     };
 
     // Generate a wrapping key for the HSM to wrap the secret key with
-    debug_println!(cli.debug, "Generating wrapping key...");
+    debug!("Generating wrapping key...");
     let rsa_wrapping_key = match generate_wrapping_key() {
         Ok(k) => k,
         Err(e) => {
@@ -146,11 +163,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    debug_println!(
-        cli.debug,
-        "\nGenerated wrapping key: {}\n",
-        rsa_wrapping_key
-    );
+    debug!("\nGenerated wrapping key: {}\n", rsa_wrapping_key);
 
     let wrapping_key = match rsa_wrapping_key.public_key_to_base64() {
         Ok(k) => k,
@@ -160,15 +173,11 @@ async fn main() {
         }
     };
 
-    debug_println!(
-        cli.debug,
-        "Base64-encoded public wrapping key: {}\n",
-        wrapping_key
-    );
+    debug!("Base64-encoded public wrapping key: {}\n", wrapping_key);
 
     // Call the function to get the TAS server version
     match tas_get_version(&server_uri, &api_key, cert_path.clone()).await {
-        Ok(version) => debug_println!(cli.debug, "TEE Attestation Server Version: {}", version),
+        Ok(version) => debug!("TEE Attestation Server Version: {}", version),
         Err(err) => {
             eprintln!("TAS Version Error: {}", err);
             std::process::exit(1);
@@ -178,7 +187,7 @@ async fn main() {
     // Call the function to get the nonce from the TAS server
     let nonce = match tas_get_nonce(&server_uri, &api_key, cert_path.clone()).await {
         Ok(nonce) => {
-            debug_println!(cli.debug, "Nonce: {}", nonce);
+            debug!("Nonce: {}", nonce);
             nonce
         }
         Err(err) => {
@@ -188,14 +197,10 @@ async fn main() {
     };
 
     // Generate the TEE evidence and get the TEE type using the nonce
-    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce, cli.debug) {
+    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce) {
         Ok((evidence, tee_type)) => {
-            debug_println!(
-                cli.debug,
-                "Generated TEE Evidence (Base64-encoded): {}",
-                evidence
-            );
-            debug_println!(cli.debug, "TEE Type: {}", tee_type);
+            debug!("Generated TEE Evidence (Base64-encoded): {}", evidence);
+            debug!("TEE Type: {}", tee_type);
             (evidence, tee_type)
         }
         Err(err) => {
@@ -218,7 +223,7 @@ async fn main() {
     .await
     {
         Ok(secret_key) => {
-            debug_println!(cli.debug, "Secret Key/Payload: {}", secret_key);
+            debug!("Secret Key/Payload: {}", secret_key);
             secret_key
         }
         Err(err) => {
@@ -230,7 +235,7 @@ async fn main() {
     // Deserialize the base64-encoded secret payload
     let mut secret: SecretsPayload = match serde_json::from_str(&secret_string) {
         Ok(secret) => {
-            debug_println!(cli.debug, "Deserialized secret payload: {:?}", secret);
+            debug!("Deserialized secret payload: {:?}", secret);
             secret
         }
         Err(err) => {
@@ -240,7 +245,7 @@ async fn main() {
     };
 
     // Unwrap the secret key using the wrapping key
-    debug_println!(cli.debug, "Unwrapping secret key...");
+    debug!("Unwrapping secret key...");
     let aes_key = match rsa_wrapping_key.unwrap_key(&secret.wrapped_key) {
         Ok(aes_key) => aes_key,
         Err(err) => {
@@ -248,10 +253,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    debug_println!(cli.debug, "Unwrapped secret key: {:?}", aes_key.hex_dump());
+    debug!("Unwrapped secret key: {:?}", aes_key.hex_dump());
 
     // Decrypt the secret payload using the unwrapped AES key
-    debug_println!(cli.debug, "Decrypting secret payload...");
+    debug!("Decrypting secret payload...");
     let decrypted_payload =
         match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag) {
             Ok(decrypted_payload) => decrypted_payload,
