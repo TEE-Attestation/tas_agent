@@ -23,27 +23,45 @@ Unit tests are run via the `cargo test` command.
 
 ## Execution Instructions
 
-The `tas_agent` application takes its initial configuration via environment variables that can be set in a `.env` file.
-The required environment variables can also be exported in a script that calls the `tas_kbm_ctl` application without requiring a `.env` file.
+The `tas_agent` application is configured via a configuration file (`config.toml`) and/or command-line arguments. Command-line arguments take precedence over the configuration file.
 
-The mandatory environment variables are as follows:
+### Configuration File
 
-- `TAS_SERVER_URI=http://<IP address of TAS>:<Port number of TAS>`
-- `TAS_SERVER_ROOT_CERT=<TAS Server Root Certificate>`
-- `TAS_KEY_ID=<KMIP ID of secret required>`
+The default configuration file path is `/etc/tas_agent/config.toml`. An example configuration file is provided in `config/config.toml.sample`:
 
-The API key default path is `/etc/tas_agent/api-key`, but this can
-be overridden with:
+```toml
+# The URI of the TAS REST service
+server_uri = "http://X.X.X.X:5000"
 
-- `TAS_SERVER_API_KEY=<Path to file containing API key for TAS>`
+# Path to the API key for the TAS REST service
+api_key = "/etc/tas_agent/api-key"
 
-If using TLS, ensure that TAS_SERVER_URI has specified 'https'.
-Set the 'TAS_SERVER_ROOT_CERT' environment variable to the path location of the Root Certificate.
+# Path to the CA root certificate signing the TAS REST service cert
+cert_path = "/etc/tas_agent/root_cert.pem"
 
-Run the `tas_agent` program:
+# ID of the key to request from the TAS REST service
+key_id = "..."
+```
+
+If using TLS, ensure that `server_uri` specifies `https`.
+
+### Command-Line Options
+
+| Option | Description |
+|---|---|
+| `-d`, `--debug` | Display debugging messages |
+| `-c`, `--config <FILE>` | Path to the config file (default: `/etc/tas_agent/config.toml`) |
+| `--server-uri <URI>` | The URI of the TAS REST service |
+| `--api-key <FILE>` | Path to the API key for the TAS REST service |
+| `--key-id <ID>` | ID of the key to request from the TAS REST service |
+| `--cert-path <FILE>` | Path to the CA root certificate signing the TAS REST service cert |
+
+### Running
+
+Run the `tas_agent` program with a config file:
 
 ```bash
-sudo ./target/debug/tas_agent
+sudo ./target/debug/tas_agent -c config/config.toml
 ```
 
 Example output:
