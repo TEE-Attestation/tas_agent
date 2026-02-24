@@ -147,7 +147,7 @@ async fn main() {
     });
 
     let api_key = match read_to_string(api_key_path.clone()) {
-        Ok(d) => d,
+        Ok(d) => d.trim().to_string(),
         Err(e) => {
             eprintln!("unable to read API key from {:?}: {}", api_key_path, e);
             std::process::exit(1)
