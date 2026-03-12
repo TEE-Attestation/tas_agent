@@ -12,17 +12,20 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-/// Helper function to create a `reqwest::Client` with a custom root certificate
+/// Helper function to create a `reqwest::Client` with custom root certificates
 fn create_client_with_root_cert(cert_path: PathBuf) -> Result<Client, String> {
-    // Load the root certificate from the specified file
+    // Load all certificates from the PEM bundle (may contain intermediate + root CA)
     let cert_data =
         fs::read(cert_path).map_err(|err| format!("Error reading certificate file: {}", err))?;
-    let cert = Certificate::from_pem(&cert_data)
-        .map_err(|err| format!("Error parsing certificate: {}", err))?;
+    let certs = Certificate::from_pem_bundle(&cert_data)
+        .map_err(|err| format!("Error parsing certificate bundle: {}", err))?;
 
-    // Build the client with the custom root certificate
-    Client::builder()
-        .add_root_certificate(cert)
+    // Build the client with all certificates from the bundle
+    let mut builder = Client::builder();
+    for cert in certs {
+        builder = builder.add_root_certificate(cert);
+    }
+    builder
         //.danger_accept_invalid_certs(true) // For Testing: Disable cert validation including hostname verification
         .build()
         .map_err(|err| format!("Error creating HTTP client: {}", err))
