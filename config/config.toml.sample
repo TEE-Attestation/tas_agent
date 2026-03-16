@@ -10,3 +10,12 @@ cert_path = "/etc/tas_agent/root_cert.pem"
 
 # ID of the key to request from the TAS REST service
 key_id = "..."
+
+# Maximum number of retry attempts for HTTP requests (default: 3)
+# max_retries = 3
+
+# Minimum backoff time in seconds between retries (default: 1)
+# retry_min_backoff_secs = 1
+
+# Maximum backoff time in seconds between retries (default: 30)
+# retry_max_backoff_secs = 30

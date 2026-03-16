@@ -28,7 +28,7 @@ use clap::Parser;
 use serde::Deserialize;
 
 use crypto::{decrypt_secret_with_aes_key, generate_wrapping_key};
-use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version};
+use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version, RetryConfig};
 use tee_evidence::tee_get_evidence;
 use utils::SecretsPayload;
 
@@ -75,6 +75,18 @@ struct Cli {
     /// Path to the CA root certificate signing the TAS REST service cert
     #[arg(long, value_name = "FILE")]
     cert_path: Option<PathBuf>,
+
+    /// Maximum number of retry attempts for HTTP requests (default: 3)
+    #[arg(long, value_name = "N")]
+    max_retries: Option<u32>,
+
+    /// Minimum backoff time in seconds between retries (default: 1)
+    #[arg(long, value_name = "SECS")]
+    retry_min_backoff_secs: Option<u64>,
+
+    /// Maximum backoff time in seconds between retries (default: 30)
+    #[arg(long, value_name = "SECS")]
+    retry_max_backoff_secs: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -83,6 +95,9 @@ struct Config {
     api_key: Option<PathBuf>,
     key_id: Option<String>,
     cert_path: Option<PathBuf>,
+    max_retries: Option<u32>,
+    retry_min_backoff_secs: Option<u64>,
+    retry_max_backoff_secs: Option<u64>,
 }
 
 fn load_config(path: Option<PathBuf>) -> Result<Config> {
@@ -146,6 +161,19 @@ async fn main() {
             .unwrap_or(PathBuf::from("/etc/tas_agent/root_cert.pem".to_string()))
     });
 
+    let retry_config = RetryConfig {
+        max_retries: cli.max_retries.or(cfg.max_retries).unwrap_or(3),
+        min_backoff_secs: cli
+            .retry_min_backoff_secs
+            .or(cfg.retry_min_backoff_secs)
+            .unwrap_or(1),
+        max_backoff_secs: cli
+            .retry_max_backoff_secs
+            .or(cfg.retry_max_backoff_secs)
+            .unwrap_or(30),
+    };
+    debug!("Retry config: {:?}", retry_config);
+
     let api_key = match read_to_string(api_key_path.clone()) {
         Ok(d) => d.trim().to_string(),
         Err(e) => {
@@ -176,7 +204,7 @@ async fn main() {
     debug!("Base64-encoded public wrapping key: {}\n", wrapping_key);
 
     // Call the function to get the TAS server version
-    match tas_get_version(&server_uri, &api_key, cert_path.clone()).await {
+    match tas_get_version(&server_uri, &api_key, cert_path.clone(), &retry_config).await {
         Ok(version) => debug!("TEE Attestation Server Version: {}", version),
         Err(err) => {
             eprintln!("TAS Version Error: {}", err);
@@ -185,7 +213,7 @@ async fn main() {
     }
 
     // Call the function to get the nonce from the TAS server
-    let nonce = match tas_get_nonce(&server_uri, &api_key, cert_path.clone()).await {
+    let nonce = match tas_get_nonce(&server_uri, &api_key, cert_path.clone(), &retry_config).await {
         Ok(nonce) => {
             debug!("Nonce: {}", nonce);
             nonce
@@ -219,6 +247,7 @@ async fn main() {
         &key_id,
         &wrapping_key,
         cert_path.clone(),
+        &retry_config,
     )
     .await
     {

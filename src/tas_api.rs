@@ -1,6 +1,6 @@
 // TEE Attestation Service Agent
 //
-// Copyright 2025 Hewlett Packard Enterprise Development LP.
+// Copyright 2025 - 2026 Hewlett Packard Enterprise Development LP.
 // SPDX-License-Identifier: MIT
 //
 // This application interacts via a REST API with the TEE Attestation Service Key Broker Module.
@@ -8,12 +8,38 @@
 // TAS REST API functionality.
 //
 use reqwest::{Certificate, Client};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use retry_policies::Jitter;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
-/// Helper function to create a `reqwest::Client` with custom root certificates
-fn create_client_with_root_cert(cert_path: PathBuf) -> Result<Client, String> {
+/// Retry configuration for HTTP requests
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub min_backoff_secs: u64,
+    pub max_backoff_secs: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            min_backoff_secs: 1,
+            max_backoff_secs: 30,
+        }
+    }
+}
+
+/// Helper function to create a `reqwest_middleware::ClientWithMiddleware` with custom root
+/// certificates and retry middleware configured with exponential backoff and jitter.
+fn create_client_with_root_cert(
+    cert_path: PathBuf,
+    retry_config: &RetryConfig,
+) -> Result<ClientWithMiddleware, String> {
     // Load all certificates from the PEM bundle (may contain intermediate + root CA)
     let cert_data =
         fs::read(cert_path).map_err(|err| format!("Error reading certificate file: {}", err))?;
@@ -25,10 +51,25 @@ fn create_client_with_root_cert(cert_path: PathBuf) -> Result<Client, String> {
     for cert in certs {
         builder = builder.add_root_certificate(cert);
     }
-    builder
+    let client = builder
         //.danger_accept_invalid_certs(true) // For Testing: Disable cert validation including hostname verification
         .build()
-        .map_err(|err| format!("Error creating HTTP client: {}", err))
+        .map_err(|err| format!("Error creating HTTP client: {}", err))?;
+
+    // Configure exponential backoff with full jitter
+    let retry_policy = ExponentialBackoff::builder()
+        .retry_bounds(
+            Duration::from_secs(retry_config.min_backoff_secs),
+            Duration::from_secs(retry_config.max_backoff_secs),
+        )
+        .jitter(Jitter::Full)
+        .build_with_max_retries(retry_config.max_retries);
+
+    let client_with_middleware = ClientBuilder::new(client)
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+
+    Ok(client_with_middleware)
 }
 
 /// Function to make the GET request to the version API and return the server version
@@ -36,9 +77,10 @@ pub async fn tas_get_version(
     server_uri: &str,
     api_key: &str,
     cert_path: PathBuf,
+    retry_config: &RetryConfig,
 ) -> Result<String, String> {
     let version_url = format!("{}/version", server_uri);
-    let client = create_client_with_root_cert(cert_path)?;
+    let client = create_client_with_root_cert(cert_path, retry_config)?;
 
     match client
         .get(&version_url)
@@ -71,9 +113,10 @@ pub async fn tas_get_nonce(
     server_uri: &str,
     api_key: &str,
     cert_path: PathBuf,
+    retry_config: &RetryConfig,
 ) -> Result<String, String> {
     let nonce_url = format!("{}/kb/v0/get_nonce", server_uri);
-    let client = create_client_with_root_cert(cert_path)?;
+    let client = create_client_with_root_cert(cert_path, retry_config)?;
 
     match client
         .get(&nonce_url)
@@ -112,9 +155,10 @@ pub async fn tas_get_secret_key(
     key_id: &str,
     wrapping_key: &str,
     cert_path: PathBuf,
+    retry_config: &RetryConfig,
 ) -> Result<String, String> {
     let secret_url = format!("{}/kb/v0/get_secret", server_uri);
-    let client = create_client_with_root_cert(cert_path)?;
+    let client = create_client_with_root_cert(cert_path, retry_config)?;
 
     // Create the JSON body for the POST request
     let body = serde_json::json!({
@@ -170,10 +214,27 @@ pub async fn tas_get_secret_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::{mock, server_url};
-    //use std::fs;
+    use mockito::Server;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// Helper to create a RetryConfig with no retries for fast deterministic tests
+    fn no_retry_config() -> RetryConfig {
+        RetryConfig {
+            max_retries: 0,
+            min_backoff_secs: 0,
+            max_backoff_secs: 0,
+        }
+    }
+
+    /// Helper to create a RetryConfig that allows retries (1s backoff for tests)
+    fn test_retry_config(max_retries: u32) -> RetryConfig {
+        RetryConfig {
+            max_retries,
+            min_backoff_secs: 1,
+            max_backoff_secs: 1,
+        }
+    }
 
     /// Helper function to create a temporary PEM file for testing
     fn create_test_cert() -> NamedTempFile {
@@ -217,47 +278,56 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
 
     #[tokio::test]
     async fn test_tas_get_version_success() {
-        let _mock = mock("GET", "/version")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/version")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"version": "1.2.3"}"#)
-            .create();
+            .create_async()
+            .await;
 
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        let result = tas_get_version(&server_uri, api_key, cert_path).await;
+        let result = tas_get_version(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         assert_eq!(result.unwrap(), "\"1.2.3\"");
     }
 
     #[tokio::test]
     async fn test_tas_get_nonce_success() {
-        let _mock = mock("GET", "/kb/v0/get_nonce")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/kb/v0/get_nonce")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"nonce": "abc123"}"#)
-            .create();
+            .create_async()
+            .await;
 
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
+        let result = tas_get_nonce(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         assert_eq!(result.unwrap(), "\"abc123\"");
     }
 
     #[tokio::test]
     async fn test_tas_get_secret_key_success() {
-        let _mock = mock("POST", "/kb/v0/get_secret")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/kb/v0/get_secret")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"secret_key": "xyz789"}"#)
-            .create();
+            .create_async()
+            .await;
 
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
@@ -275,6 +345,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             key_id,
             wrapping_key,
             cert_path,
+            &no_retry_config(),
         )
         .await;
 
@@ -290,18 +361,21 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         // error message indicating that the "version" field was not found.
 
         // Mock the /version endpoint with a response missing the "version" field
-        let _mock = mock("GET", "/version")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/version")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"other_field": "value"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        let result = tas_get_version(&server_uri, api_key, cert_path).await;
+        let result = tas_get_version(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         // Assert the result
         assert_eq!(
@@ -317,20 +391,24 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         // The mocked response has a status code of 500 (Internal Server Error).
         // The test verifies that the `tas_get_version` function returns an error
         // message indicating the HTTP status code of the failed request.
+        // With retry middleware, 500 is retryable — use no_retry_config to avoid retries.
 
         // Mock the /version endpoint with an HTTP error
-        let _mock = mock("GET", "/version")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/version")
             .with_status(500)
             .with_header("content-type", "application/json")
             .with_body(r#"{"error": "Internal Server Error"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        let result = tas_get_version(&server_uri, api_key, cert_path).await;
+        let result = tas_get_version(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         // Assert the result
         assert!(result.unwrap_err().contains("Error: Received HTTP 500"));
@@ -345,20 +423,21 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         // error message indicating that the "nonce" field was not found.
 
         // Mock the /kb/get_nonce endpoint with a response missing the "nonce" field
-        let _mock = mock("GET", "/kb/v0/get_nonce")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/kb/v0/get_nonce")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"other_field": "value"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        println!("cert_path: {:?}", cert_path);
-        println!("server_uri: {}", server_uri);
-        let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
+        let result = tas_get_nonce(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         // Assert the result
         assert_eq!(
@@ -376,18 +455,21 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         // message indicating the HTTP status code of the failed request.
 
         // Mock the /kb/get_nonce endpoint with an HTTP error
-        let _mock = mock("GET", "/kb/v0/get_nonce")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/kb/v0/get_nonce")
             .with_status(500)
             .with_header("content-type", "application/json")
             .with_body(r#"{"error": "Internal Server Error"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
-        let result = tas_get_nonce(&server_uri, api_key, cert_path).await;
+        let result = tas_get_nonce(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
         // Assert the result
         assert!(result.unwrap_err().contains("Error: Received HTTP 500"));
@@ -396,14 +478,17 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
     #[tokio::test]
     async fn test_tas_get_secret_key_missing_secret_key_field() {
         // Mock the /kb/get_secret endpoint with a response missing the "secret_key" field
-        let _mock = mock("POST", "/kb/v0/get_secret")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/kb/v0/get_secret")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"other_field": "value"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
@@ -421,6 +506,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             key_id,
             wrapping_key,
             cert_path,
+            &no_retry_config(),
         )
         .await;
 
@@ -434,14 +520,17 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
     #[tokio::test]
     async fn test_tas_get_secret_key_http_error() {
         // Mock the /kb/get_secret endpoint with an HTTP error
-        let _mock = mock("POST", "/kb/v0/get_secret")
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/kb/v0/get_secret")
             .with_status(500)
             .with_header("content-type", "application/json")
             .with_body(r#"{"error": "Internal Server Error"}"#)
-            .create();
+            .create_async()
+            .await;
 
         // Call the function with the mock server URL
-        let server_uri = server_url();
+        let server_uri = server.url();
         let api_key = "test_api_key";
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
@@ -459,10 +548,138 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             key_id,
             wrapping_key,
             cert_path,
+            &no_retry_config(),
         )
         .await;
 
         // Assert the result
         assert!(result.unwrap_err().contains("Error: Received HTTP 500"));
+    }
+
+    // ===== Retry-specific tests =====
+
+    #[tokio::test]
+    async fn test_retry_on_503_then_success() {
+        // First request returns 503 (retryable), second returns 200
+        let mut server = Server::new_async().await;
+        let _mock_503 = server
+            .mock("GET", "/version")
+            .with_status(503)
+            .with_body("Service Unavailable")
+            .expect(1)
+            .create_async()
+            .await;
+        let _mock_200 = server
+            .mock("GET", "/version")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version": "1.0.0"}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let api_key = "test_api_key";
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
+
+        assert_eq!(result.unwrap(), "\"1.0.0\"");
+    }
+
+    #[tokio::test]
+    async fn test_retry_on_429_then_success() {
+        // First request returns 429 (rate limit, retryable), second returns 200
+        let mut server = Server::new_async().await;
+        let _mock_429 = server
+            .mock("GET", "/version")
+            .with_status(429)
+            .with_body("Too Many Requests")
+            .expect(1)
+            .create_async()
+            .await;
+        let _mock_200 = server
+            .mock("GET", "/version")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version": "1.0.0"}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let api_key = "test_api_key";
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
+
+        assert_eq!(result.unwrap(), "\"1.0.0\"");
+    }
+
+    #[tokio::test]
+    async fn test_retry_exhaustion_returns_error() {
+        // All requests return 503 — retries should be exhausted
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/version")
+            .with_status(503)
+            .with_body("Service Unavailable")
+            .expect_at_least(2)
+            .expect_at_most(3)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let api_key = "test_api_key";
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
+
+        assert!(result.is_err());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_no_retry_on_400() {
+        // 400 is not retryable — should fail immediately with 1 request
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/version")
+            .with_status(400)
+            .with_body("Bad Request")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let api_key = "test_api_key";
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Error: Received HTTP 400"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_no_retry_on_success() {
+        // 200 should not trigger any retries — exactly 1 request
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/version")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version": "2.0.0"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let api_key = "test_api_key";
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
+
+        assert_eq!(result.unwrap(), "\"2.0.0\"");
+        mock.assert_async().await;
     }
 }
