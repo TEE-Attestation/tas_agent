@@ -27,7 +27,7 @@ CONFIG="./config/config.toml.sample"
 APIKEY="./config/api-key.sample"
 
 # Parse command line options
-while getopts "d:r:h" opt; do
+while getopts "d:r:e:a:h" opt; do
     case "$opt" in
         d) DESTDIR="$OPTARG" ;;
         r) ROOTCERT="$OPTARG" ;;
