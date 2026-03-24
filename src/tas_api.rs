@@ -12,6 +12,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use retry_policies::Jitter;
 use serde_json::Value;
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -156,18 +157,30 @@ pub async fn tas_get_secret_key(
     wrapping_key: &str,
     cert_path: PathBuf,
     retry_config: &RetryConfig,
+    report_data_binding: bool,
+    gpu_evidence: Option<&serde_json::Value>,
 ) -> Result<String, String> {
     let secret_url = format!("{}/kb/v0/get_secret", server_uri);
     let client = create_client_with_root_cert(cert_path, retry_config)?;
 
     // Create the JSON body for the POST request
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "tee-type": tee_type,
         "nonce": nonce,
         "tee-evidence": tee_evidence,
         "key-id": key_id,
         "wrapping-key": wrapping_key
     });
+
+    // Signal key binding to the server
+    if report_data_binding {
+        body["report-data-binding"] = serde_json::json!(true);
+    }
+
+    // Include GPU evidence when available
+    if let Some(gpu_entries) = gpu_evidence {
+        body["gpu-evidence"] = gpu_entries.clone();
+    }
 
     match client
         .post(&secret_url)
@@ -346,6 +359,8 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             wrapping_key,
             cert_path,
             &no_retry_config(),
+            false,
+            None,
         )
         .await;
 
@@ -507,6 +522,8 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             wrapping_key,
             cert_path,
             &no_retry_config(),
+            false,
+            None,
         )
         .await;
 
@@ -549,6 +566,8 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             wrapping_key,
             cert_path,
             &no_retry_config(),
+            false,
+            None,
         )
         .await;
 
@@ -680,6 +699,119 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let result = tas_get_version(&server_uri, api_key, cert_path, &test_retry_config(2)).await;
 
         assert_eq!(result.unwrap(), "\"2.0.0\"");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_tas_get_secret_key_with_report_data_binding() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"report-data-binding":true}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key": "bound_secret"}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_secret_key(
+            &server_uri,
+            "api_key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_path,
+            &no_retry_config(),
+            true,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), r#""bound_secret""#);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_tas_get_secret_key_with_gpu_evidence() {
+        let gpu_evidence = serde_json::json!([
+            {
+                "tee-type": "nvidia-gpu",
+                "device-index": 0,
+                "tee-evidence": "gpu_report_base64"
+            }
+        ]);
+
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"gpu-evidence":[{"tee-type":"nvidia-gpu","device-index":0,"tee-evidence":"gpu_report_base64"}]}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key": "gpu_secret"}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_secret_key(
+            &server_uri,
+            "api_key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_path,
+            &no_retry_config(),
+            true,
+            Some(&gpu_evidence),
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), r#""gpu_secret""#);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_tas_get_secret_key_no_binding_no_gpu() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key": "plain_secret"}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result = tas_get_secret_key(
+            &server_uri,
+            "api_key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_path,
+            &no_retry_config(),
+            false,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), r#""plain_secret""#);
         mock.assert_async().await;
     }
 }

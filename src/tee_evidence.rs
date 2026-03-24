@@ -1,6 +1,6 @@
 // TEE Attestation Service Agent
 //
-// Copyright 2025 Hewlett Packard Enterprise Development LP.
+// Copyright 2025 - 2026 Hewlett Packard Enterprise Development LP.
 // SPDX-License-Identifier: MIT
 //
 // This application interacts via a REST API with the TEE Attestation Service Key Broker Module.
@@ -51,14 +51,30 @@ fn get_vmpl() -> Result<String, Box<dyn Error>> {
 
 /// Function to generate TEE evidence and return the TEE type
 ///
-/// This function takes the nonce as a parameter and returns a tuple:
 /// Requires config_tsm to be enabled in the kernel.
+///
 /// # Arguments
 /// * `nonce` - A string slice that holds the nonce value (must be exactly 64 bytes long)
+/// * `report_data` - Optional raw bytes (must be exactly 64 bytes) to write to inblob
+///   instead of the nonce string. When `Some`, enables the caller to bind the RSA public
+///   key (and optional GPU evidence hashes) into the TEE report via
+///   `SHA-512(nonce || pubkey_der [|| gpu_hashes])`. When `None`, the original
+///   nonce-as-string behaviour is used.
+///
+///   When GPU attestation is enabled, `gpu_hashes` is constructed as follows:
+///   1. Each GPU's raw attestation evidence is hashed individually with SHA-512.
+///   2. The per-GPU hashes are concatenated in device-index order:
+///      `SHA-512(gpu0) || SHA-512(gpu1) || ...`
+///   3. The concatenated result is appended to the binding input, producing:
+///      `SHA-512(nonce || pubkey_der || gpu_hashes)`
+///
 /// # Returns
 /// * `Result<(String, String), String>` - On success, returns a tuple containing the
 ///   Base64-encoded TEE evidence and the TEE type. On failure, returns an error message.
-pub fn tee_get_evidence(nonce: &str) -> Result<(String, String), String> {
+pub fn tee_get_evidence(
+    nonce: &str,
+    report_data: Option<&[u8]>,
+) -> Result<(String, String), String> {
     // Setup temp_dir_path to the config tsm report path
     let temp_dir_path = "/sys/kernel/config/tsm/report";
 
@@ -72,22 +88,34 @@ pub fn tee_get_evidence(nonce: &str) -> Result<(String, String), String> {
             nonce_bytes.len()
         ));
     }
-    let nonce = String::from_utf8(nonce_bytes.to_vec())
-        .map_err(|err| format!("Error converting nonce to string: {}", err))?;
+
+    // Determine what to write to inblob: custom report_data or the nonce string
+    let inblob_bytes: Vec<u8> = match report_data {
+        Some(rd) => {
+            if rd.len() != 64 {
+                return Err(format!(
+                    "Error: report_data must be exactly 64 bytes, but it is {} bytes",
+                    rd.len()
+                ));
+            }
+            rd.to_vec()
+        }
+        None => nonce.as_bytes().to_vec(),
+    };
 
     // Attempt to create a temporary directory inside the specified path
     let tmp_dir = tempdir_in(temp_dir_path)
         .map_err(|err| format!("Failed to create temp directory: {}", err))?;
     debug!("Temp dir created at: {:?}", tmp_dir.path());
-    debug!("Nonce_bytes (hex): {}", hex::encode(nonce_bytes));
+    debug!("Inblob bytes (hex): {}", hex::encode(&inblob_bytes));
 
     // Determine TEE type
     let tee_type =
         get_tee_type(&tmp_dir).map_err(|err| format!("Failed to determine TEE type: {}", err))?;
 
-    // Write nonce to inblob file
+    // Write inblob (report_data or nonce) to inblob file
     let inblob_file_path = tmp_dir.path().join("inblob");
-    fs::write(&inblob_file_path, nonce)
+    fs::write(&inblob_file_path, &inblob_bytes)
         .map_err(|err| format!("Failed to write to inblob file: {}", err))?;
     debug!("Wrote to inblob file at: {:?}", inblob_file_path);
 
@@ -118,4 +146,118 @@ pub fn tee_get_evidence(nonce: &str) -> Result<(String, String), String> {
     let encoded_report = general_purpose::STANDARD.encode(&tee_report);
 
     Ok((encoded_report, tee_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // --- get_tee_type tests ---
+
+    #[test]
+    fn test_get_tee_type_sev_guest() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("provider"), "sev_guest\n").unwrap();
+        // get_tee_type expects a &TempDir from tempfile::TempDir, so we
+        // create one via tempdir_in.  But since get_tee_type only reads
+        // provider, we can use the same TempDir (path matches).
+        let result = get_tee_type(&dir);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "amd-sev-snp");
+    }
+
+    #[test]
+    fn test_get_tee_type_tdx_guest() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("provider"), "tdx_guest\n").unwrap();
+        let result = get_tee_type(&dir);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "intel-tdx");
+    }
+
+    #[test]
+    fn test_get_tee_type_unknown_provider() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("provider"), "some_unknown\n").unwrap();
+        let result = get_tee_type(&dir);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Unknown TEE provider"));
+    }
+
+    #[test]
+    fn test_get_tee_type_missing_provider_file() {
+        let dir = tempdir().unwrap();
+        // No provider file written
+        let result = get_tee_type(&dir);
+        assert!(result.is_err());
+    }
+
+    // --- Nonce validation tests ---
+
+    #[test]
+    fn test_nonce_too_short() {
+        let short_nonce = "abc"; // 3 bytes, not 64
+        let result = tee_get_evidence(short_nonce, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Nonce must be exactly 64 bytes"));
+    }
+
+    #[test]
+    fn test_nonce_too_long() {
+        let long_nonce = "a".repeat(65);
+        let result = tee_get_evidence(&long_nonce, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Nonce must be exactly 64 bytes"));
+    }
+
+    #[test]
+    fn test_nonce_with_surrounding_quotes_trimmed() {
+        // 66 chars with quotes, 64 after trimming
+        let quoted_nonce = format!("\"{}\"", "A".repeat(64));
+        // This will fail at the TSM directory step, but nonce validation should pass.
+        // The error should NOT be about nonce length.
+        let result = tee_get_evidence(&quoted_nonce, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(!err.contains("Nonce must be exactly 64 bytes"));
+    }
+
+    // --- report_data validation tests ---
+
+    #[test]
+    fn test_report_data_wrong_length() {
+        let nonce = "B".repeat(64);
+        let bad_rd = vec![0u8; 32]; // 32 bytes, not 64
+        let result = tee_get_evidence(&nonce, Some(&bad_rd));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("report_data must be exactly 64 bytes"));
+    }
+
+    #[test]
+    fn test_report_data_too_long() {
+        let nonce = "C".repeat(64);
+        let long_rd = vec![0u8; 128];
+        let result = tee_get_evidence(&nonce, Some(&long_rd));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("report_data must be exactly 64 bytes"));
+    }
+
+    #[test]
+    fn test_report_data_correct_length_passes_validation() {
+        let nonce = "D".repeat(64);
+        let good_rd = vec![0xABu8; 64];
+        // Will fail at TSM directory step, but report_data validation should pass.
+        let result = tee_get_evidence(&nonce, Some(&good_rd));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(!err.contains("report_data must be exactly 64 bytes"));
+        assert!(!err.contains("Nonce must be exactly 64 bytes"));
+    }
 }

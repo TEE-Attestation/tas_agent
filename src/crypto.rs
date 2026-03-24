@@ -16,6 +16,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 
+use sha2::{Digest, Sha512};
 use std::error::Error;
 
 //TODO: Add own error type, instead of using Box<dyn Error>
@@ -65,7 +66,7 @@ impl RsaKey {
     }
 
     /// Converts public key to DER format
-    fn public_key_to_der(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn public_key_to_der(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         let der = self
             .public_key
             .to_pkcs1_der()
@@ -156,6 +157,41 @@ pub fn encrypt_secret_with_aes_key(
     Ok((plaintext.to_vec(), tag.to_vec()))
 }
 
+/// Computes SHA-512(nonce || pubkey_der) for CPU-only key binding.
+/// Returns raw 64-byte hash that fits exactly in REPORT_DATA (SEV-SNP / TDX).
+pub fn compute_report_data_binding(nonce: &[u8], pubkey_der: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha512::new();
+    hasher.update(nonce);
+    hasher.update(pubkey_der);
+    hasher.finalize().to_vec()
+}
+
+#[cfg(feature = "gpu-attestation")]
+/// Computes SHA-512(nonce || pubkey_der || gpu_hashes) for composable attestation.
+/// `gpu_hashes` is the pre-concatenated SHA-512 hashes of each GPU's evidence,
+/// ordered by device index: SHA512(gpu0) || SHA512(gpu1) || ...
+/// Returns raw 64-byte hash.
+pub fn compute_report_data_binding_with_gpu(
+    nonce: &[u8],
+    pubkey_der: &[u8],
+    gpu_hashes: &[u8],
+) -> Vec<u8> {
+    let mut hasher = Sha512::new();
+    hasher.update(nonce);
+    hasher.update(pubkey_der);
+    hasher.update(gpu_hashes);
+    hasher.finalize().to_vec()
+}
+
+#[cfg(feature = "gpu-attestation")]
+/// Computes SHA-512 of a single GPU's raw attestation evidence.
+/// Returns raw 64-byte hash. Called once per GPU before concatenation.
+pub fn hash_gpu_evidence(raw_evidence: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha512::new();
+    hasher.update(raw_evidence);
+    hasher.finalize().to_vec()
+}
+
 //add tests
 #[cfg(test)]
 mod tests {
@@ -171,6 +207,86 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_report_data_binding_length() {
+        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let binding = compute_report_data_binding(nonce, &pubkey_der);
+        assert_eq!(
+            binding.len(),
+            64,
+            "SHA-512 binding must be exactly 64 bytes"
+        );
+    }
+
+    #[test]
+    fn test_compute_report_data_binding_deterministic() {
+        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let binding1 = compute_report_data_binding(nonce, &pubkey_der);
+        let binding2 = compute_report_data_binding(nonce, &pubkey_der);
+        assert_eq!(
+            binding1, binding2,
+            "Same inputs must produce the same binding"
+        );
+    }
+
+    #[test]
+    fn test_compute_report_data_binding_different_keys() {
+        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let key1 = generate_wrapping_key().unwrap();
+        let key2 = generate_wrapping_key().unwrap();
+        let der1 = key1.public_key_to_der().unwrap();
+        let der2 = key2.public_key_to_der().unwrap();
+        let binding1 = compute_report_data_binding(nonce, &der1);
+        let binding2 = compute_report_data_binding(nonce, &der2);
+        assert_ne!(
+            binding1, binding2,
+            "Different keys must produce different bindings"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-attestation")]
+    fn test_compute_report_data_binding_with_gpu() {
+        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let gpu0_evidence = b"gpu0_attestation_report_bytes";
+        let gpu1_evidence = b"gpu1_attestation_report_bytes";
+        let gpu0_hash = hash_gpu_evidence(gpu0_evidence);
+        let gpu1_hash = hash_gpu_evidence(gpu1_evidence);
+        let mut gpu_combined = gpu0_hash.clone();
+        gpu_combined.extend_from_slice(&gpu1_hash);
+        let binding = compute_report_data_binding_with_gpu(nonce, &pubkey_der, &gpu_combined);
+        assert_eq!(binding.len(), 64, "Composable binding must be 64 bytes");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-attestation")]
+    fn test_hash_gpu_evidence_length() {
+        let evidence = b"some_gpu_attestation_evidence";
+        let hash = hash_gpu_evidence(evidence);
+        assert_eq!(hash.len(), 64, "GPU evidence hash must be 64 bytes");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-attestation")]
+    fn test_gpu_binding_changes_cpu_hash() {
+        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let cpu_only = compute_report_data_binding(nonce, &pubkey_der);
+        let gpu_hash = hash_gpu_evidence(b"gpu_evidence");
+        let with_gpu = compute_report_data_binding_with_gpu(nonce, &pubkey_der, &gpu_hash);
+        assert_ne!(
+            cpu_only, with_gpu,
+            "Adding GPU evidence must change the CPU binding"
+        );
+    }
+
+    #[test]
     fn test_aes_decryption() {
         let aes_key = [0u8; 32]; // 256-bit key
         let iv = [0u8; 12]; // 96-bit IV (nonce) for AES-GCM
@@ -180,5 +296,119 @@ mod tests {
         let decrypted_data =
             decrypt_secret_with_aes_key(&aes_key, &iv, &mut ciphertext, &tag).unwrap();
         assert_eq!(b"Hello, world!".to_vec(), decrypted_data);
+    }
+
+    // --- public_key_to_der tests ---
+
+    #[test]
+    fn test_public_key_to_der_returns_valid_der() {
+        let rsa_key = generate_wrapping_key().unwrap();
+        let der = rsa_key.public_key_to_der().unwrap();
+        // DER-encoded RSA public keys start with 0x30 (SEQUENCE tag)
+        assert_eq!(der[0], 0x30, "DER encoding must start with SEQUENCE tag");
+    }
+
+    // --- public_key_to_base64 tests ---
+
+    #[test]
+    fn test_public_key_to_base64_valid() {
+        let rsa_key = generate_wrapping_key().unwrap();
+        let b64 = rsa_key.public_key_to_base64().unwrap();
+        // Must be valid base64 that decodes to the same DER
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .unwrap();
+        let der = rsa_key.public_key_to_der().unwrap();
+        assert_eq!(decoded, der);
+    }
+
+    // --- unwrap_key roundtrip test ---
+
+    #[test]
+    fn test_unwrap_key_roundtrip() {
+        let rsa_key = generate_wrapping_key().unwrap();
+        let aes_key = b"0123456789abcdef0123456789abcdef"; // 32-byte AES key
+        let encrypted = rsa_key.encrypt(aes_key).unwrap();
+        let unwrapped = rsa_key.unwrap_key(&encrypted).unwrap();
+        assert_eq!(unwrapped, aes_key.to_vec());
+    }
+
+    // --- generate_key_pair with different sizes ---
+
+    #[test]
+    fn test_generate_key_pair_invalid_size() {
+        let result = generate_key_pair(1024);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("2048") || err.contains("3072") || err.contains("4096"));
+    }
+
+    #[test]
+    fn test_generate_key_pair_2048() {
+        let result = generate_key_pair(2048);
+        assert!(result.is_ok());
+    }
+
+    // --- AES validation tests ---
+
+    #[test]
+    fn test_aes_decrypt_wrong_key_length() {
+        let bad_key = [0u8; 16]; // 128-bit, should be 256-bit
+        let iv = [0u8; 12];
+        let mut ciphertext = vec![0u8; 16];
+        let tag = [0u8; 16];
+        let result = decrypt_secret_with_aes_key(&bad_key, &iv, &mut ciphertext, &tag);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_aes_decrypt_wrong_iv_length() {
+        let key = [0u8; 32];
+        let bad_iv = [0u8; 16]; // 128-bit, should be 96-bit
+        let mut ciphertext = vec![0u8; 16];
+        let tag = [0u8; 16];
+        let result = decrypt_secret_with_aes_key(&key, &bad_iv, &mut ciphertext, &tag);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aes_encrypt_wrong_key_length() {
+        let bad_key = [0u8; 16];
+        let iv = [0u8; 12];
+        let mut plaintext = b"test data".to_vec();
+        let result = encrypt_secret_with_aes_key(&bad_key, &iv, &mut plaintext);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_aes_encrypt_wrong_iv_length() {
+        let key = [0u8; 32];
+        let bad_iv = [0u8; 16];
+        let mut plaintext = b"test data".to_vec();
+        let result = encrypt_secret_with_aes_key(&key, &bad_iv, &mut plaintext);
+        assert!(result.is_err());
+    }
+
+    // --- compute_report_data_binding edge cases ---
+
+    #[test]
+    fn test_binding_different_nonces_produce_different_hashes() {
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let nonce1 = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let nonce2 = b"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+        let binding1 = compute_report_data_binding(nonce1, &pubkey_der);
+        let binding2 = compute_report_data_binding(nonce2, &pubkey_der);
+        assert_ne!(binding1, binding2);
+    }
+
+    #[test]
+    fn test_binding_empty_nonce() {
+        let rsa_key = generate_wrapping_key().unwrap();
+        let pubkey_der = rsa_key.public_key_to_der().unwrap();
+        let binding = compute_report_data_binding(b"", &pubkey_der);
+        assert_eq!(binding.len(), 64);
     }
 }
