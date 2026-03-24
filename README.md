@@ -2,11 +2,32 @@
 
 ## Build Instructions
 
-To build the application, run the following command:
+### CPU-Only Attestation (Default)
+
+The default build includes CPU TEE attestation (AMD SEV-SNP / Intel TDX) with
+public-key binding. This produces the smallest binary, suitable for
+resource-constrained environments such as pre-boot attestation from an initrd.
 
 ```bash
-cargo build
+cargo build --release
 ```
+
+### With GPU Attestation Support
+
+To include GPU attestation support (composable CPU + GPU attestation), enable the
+`gpu-attestation` feature:
+
+```bash
+cargo build --release --features gpu-attestation
+```
+
+> **Note:** GPU attestation is currently a stub and not yet implemented. The
+> `GpuEvidenceProvider` trait and detection framework are in place, but no
+> concrete GPU provider (e.g. NVIDIA) is functional yet. Enabling the feature
+> adds the composable attestation code path but GPU evidence collection will
+> fail at runtime until a provider is implemented.
+
+### Package Build
 
 To build a package for installation (e.g. in /opt/tas), run the following command:
 
@@ -20,6 +41,12 @@ Copy the .tgz file generated to the target VM's /opt/tas directory.
 ## Unit Tests
 
 Unit tests are run via the `cargo test` command.
+
+To run tests including GPU attestation tests:
+
+```bash
+cargo test --features gpu-attestation
+```
 
 ## Execution Instructions
 
@@ -50,6 +77,10 @@ key_id = "..."
 
 # Maximum backoff time in seconds between retries (default: 30)
 # retry_max_backoff_secs = 30
+
+# GPU attestation mode: "auto" or "disabled" (default: "auto")
+# Requires the gpu-attestation feature to be enabled at build time
+# gpu_attestation = "auto"
 ```
 
 If using TLS, ensure that `server_uri` specifies `https`.
@@ -67,6 +98,8 @@ If using TLS, ensure that `server_uri` specifies `https`.
 | `--max-retries <N>` | Maximum number of retry attempts for HTTP requests (default: 3) |
 | `--retry-min-backoff-secs <SECS>` | Minimum backoff time in seconds between retries (default: 1) |
 | `--retry-max-backoff-secs <SECS>` | Maximum backoff time in seconds between retries (default: 30) |
+| `--no-key-binding` | Disable public-key binding in TEE report data (for legacy TAS servers) |
+| `--gpu-attestation <MODE>` | GPU attestation mode: `auto` (default) or `disabled` (requires `gpu-attestation` feature) |
 
 ### Running
 

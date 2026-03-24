@@ -1,6 +1,6 @@
 // TEE Attestation Service Agent
 //
-// Copyright 2025 Hewlett Packard Enterprise Development LP.
+// Copyright 2025 -2026 Hewlett Packard Enterprise Development LP.
 // SPDX-License-Identifier: MIT
 //
 // This application interacts via a REST API with the TEE Attestation Service Key Broker Module.
@@ -20,14 +20,62 @@ use std::path::PathBuf;
 
 // Import the `tee_get_evidence` function from the `tee_evidence` module
 mod crypto;
+#[cfg(feature = "gpu-attestation")]
+mod gpu_evidence;
 mod tas_api;
 mod tee_evidence;
 mod utils;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use serde::Deserialize;
+use std::fmt;
 
-use crypto::{decrypt_secret_with_aes_key, generate_wrapping_key};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[allow(dead_code)]
+enum GpuAttestationMode {
+    Auto,
+    Disabled,
+}
+
+impl fmt::Display for GpuAttestationMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+/// Resolve GPU attestation mode from CLI and config values.
+/// CLI takes priority; config is the fallback; default is `Auto`.
+fn resolve_gpu_attestation_mode(
+    #[cfg(feature = "gpu-attestation")] cli_value: GpuAttestationMode,
+    #[cfg(feature = "gpu-attestation")] cfg_value: Option<&str>,
+) -> GpuAttestationMode {
+    #[cfg(not(feature = "gpu-attestation"))]
+    return GpuAttestationMode::Disabled;
+
+    #[cfg(feature = "gpu-attestation")]
+    {
+        // CLI explicitly set (not the default) — use it directly
+        if cli_value != GpuAttestationMode::Auto {
+            return cli_value;
+        }
+        // Fall back to config file value
+        match cfg_value {
+            Some("disabled") => GpuAttestationMode::Disabled,
+            _ => GpuAttestationMode::Auto,
+        }
+    }
+}
+
+#[cfg(feature = "gpu-attestation")]
+use base64::{engine::general_purpose, Engine};
+use crypto::{compute_report_data_binding, decrypt_secret_with_aes_key, generate_wrapping_key};
+#[cfg(feature = "gpu-attestation")]
+use crypto::{compute_report_data_binding_with_gpu, hash_gpu_evidence};
+#[cfg(feature = "gpu-attestation")]
+use gpu_evidence::detect_gpu_providers;
 use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version, RetryConfig};
 use tee_evidence::tee_get_evidence;
 use utils::SecretsPayload;
@@ -87,6 +135,11 @@ struct Cli {
     /// Maximum backoff time in seconds between retries (default: 30)
     #[arg(long, value_name = "SECS")]
     retry_max_backoff_secs: Option<u64>,
+
+    /// GPU attestation mode: auto (default) or disabled
+    #[cfg(feature = "gpu-attestation")]
+    #[arg(long, value_enum, default_value_t = GpuAttestationMode::Auto)]
+    gpu_attestation: GpuAttestationMode,
 }
 
 #[derive(Deserialize, Default)]
@@ -98,6 +151,9 @@ struct Config {
     max_retries: Option<u32>,
     retry_min_backoff_secs: Option<u64>,
     retry_max_backoff_secs: Option<u64>,
+    /// GPU attestation mode: "auto", "disabled" (default: "auto")
+    #[cfg(feature = "gpu-attestation")]
+    gpu_attestation: Option<String>,
 }
 
 fn load_config(path: Option<PathBuf>) -> Result<Config> {
@@ -224,8 +280,103 @@ async fn main() {
         }
     };
 
-    // Generate the TEE evidence and get the TEE type using the nonce
-    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce) {
+    // Key binding is always enabled — the RSA public key is bound into
+    // the TEE report_data via SHA-512(nonce || pubkey_der [|| gpu_hashes]).
+    let key_binding_enabled = true;
+    let gpu_attestation_mode = resolve_gpu_attestation_mode(
+        #[cfg(feature = "gpu-attestation")]
+        cli.gpu_attestation,
+        #[cfg(feature = "gpu-attestation")]
+        cfg.gpu_attestation.as_deref(),
+    );
+
+    debug!(
+        "Key binding: {}, GPU attestation: {}",
+        key_binding_enabled, gpu_attestation_mode
+    );
+
+    // --- GPU evidence collection (Phase 2: composable attestation) ---
+    #[cfg(feature = "gpu-attestation")]
+    let (gpu_entries, gpu_hashes_combined) = {
+        let mut gpu_entries = Vec::new();
+        let mut gpu_hashes_combined: Vec<u8> = Vec::new();
+        if gpu_attestation_mode != GpuAttestationMode::Disabled {
+            let providers = detect_gpu_providers();
+            if !providers.is_empty() {
+                debug!("Found {} GPU TEE provider(s)", providers.len());
+                for provider in &providers {
+                    match provider.get_evidence(&nonce) {
+                        Ok(entry) => {
+                            gpu_entries.push(entry);
+                        }
+                        Err(err) => {
+                            eprintln!("GPU {} evidence error: {}", provider.device_id(), err);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                // Ensure entries are in deterministic device_index order
+                gpu_entries.sort_by_key(|e| e.device_index);
+
+                // Build hash chain from sorted entries
+                for entry in &gpu_entries {
+                    let raw_evidence = general_purpose::STANDARD
+                        .decode(&entry.tee_evidence)
+                        .unwrap_or_else(|e| {
+                            eprintln!(
+                                "Failed to decode GPU {} evidence: {}",
+                                entry.device_index, e
+                            );
+                            std::process::exit(1);
+                        });
+                    let gpu_hash = hash_gpu_evidence(&raw_evidence);
+                    debug!(
+                        "GPU {} ({}): evidence hash = {}",
+                        entry.device_index,
+                        entry.tee_type,
+                        hex::encode(&gpu_hash)
+                    );
+                    gpu_hashes_combined.extend_from_slice(&gpu_hash);
+                }
+            }
+        }
+        (gpu_entries, gpu_hashes_combined)
+    };
+    #[cfg(not(feature = "gpu-attestation"))]
+    let gpu_hashes_combined: Vec<u8> = Vec::new();
+    let _ = &gpu_hashes_combined;
+
+    // --- Compute CPU report_data binding ---
+    let report_data: Option<Vec<u8>> = if key_binding_enabled {
+        let pubkey_der = match rsa_wrapping_key.public_key_to_der() {
+            Ok(der) => der,
+            Err(e) => {
+                eprintln!("Failed to get public key DER: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let nonce_trimmed = nonce.trim_matches('"');
+        #[cfg(feature = "gpu-attestation")]
+        let binding = if gpu_hashes_combined.is_empty() {
+            compute_report_data_binding(nonce_trimmed.as_bytes(), &pubkey_der)
+        } else {
+            compute_report_data_binding_with_gpu(
+                nonce_trimmed.as_bytes(),
+                &pubkey_der,
+                &gpu_hashes_combined,
+            )
+        };
+        #[cfg(not(feature = "gpu-attestation"))]
+        let binding = compute_report_data_binding(nonce_trimmed.as_bytes(), &pubkey_der);
+        debug!("Report data binding (hex): {}", hex::encode(&binding));
+        Some(binding)
+    } else {
+        None
+    };
+
+    // Generate the TEE evidence with  key binding
+    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce, report_data.as_deref()) {
         Ok((evidence, tee_type)) => {
             debug!("Generated TEE Evidence (Base64-encoded): {}", evidence);
             debug!("TEE Type: {}", tee_type);
@@ -238,6 +389,12 @@ async fn main() {
     };
 
     // Call the function to get the secret key using the nonce, tee_evidence, tee_type, and key_id
+    #[cfg(feature = "gpu-attestation")]
+    let gpu_evidence_ref = if gpu_entries.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(gpu_entries))
+    };
     let secret_string = match tas_get_secret_key(
         &server_uri,
         &api_key,
@@ -248,6 +405,11 @@ async fn main() {
         &wrapping_key,
         cert_path.clone(),
         &retry_config,
+        key_binding_enabled,
+        #[cfg(feature = "gpu-attestation")]
+        gpu_evidence_ref.as_ref(),
+        #[cfg(not(feature = "gpu-attestation"))]
+        None,
     )
     .await
     {

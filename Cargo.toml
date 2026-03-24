@@ -11,6 +11,7 @@ tempfile = "3.6"
 base64 = "0.21"
 hex = "0.4"
 rsa = { version = "0.9.8", features = ["sha2"] }
+sha2 = "0.10"
 # 0.8 required by rsa
 rand = "~0.8"
 aes = "0.8.4"
@@ -26,6 +27,9 @@ chrono = "0.4.43"
 reqwest-middleware = "0.2"
 reqwest-retry = "0.3"
 retry-policies = "0.2"
+
+[features]
+gpu-attestation = []
 
 [dev-dependencies]
 mockito = "1.7"
