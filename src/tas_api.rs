@@ -814,4 +814,230 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         assert_eq!(result.unwrap(), r#""plain_secret""#);
         mock.assert_async().await;
     }
+    // --- JSON request / response structure tests ---
+    //
+    // These tests validate the shape of the JSON bodies constructed and parsed by
+    // the functions in this module.  They live here rather than in crypto.rs because
+    // this is where those structures are actually built.
+
+    #[tokio::test]
+    async fn test_json_get_secret_request_fields_are_present() {
+        // Verify that tas_get_secret_key sends all required fields.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::PartialJsonString(r#"{"tee-type":"amd-sev-snp"}"#.to_string()),
+                mockito::Matcher::PartialJsonString(r#"{"nonce":"abc123"}"#.to_string()),
+                mockito::Matcher::PartialJsonString(r#"{"key-id":"key1"}"#.to_string()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key":"ok"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let _ = tas_get_secret_key(
+            &server.url(),
+            "key",
+            "abc123",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            false,
+            None,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_json_get_secret_request_includes_report_data_binding_when_set() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"report-data-binding":true}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key":"ok"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let _ = tas_get_secret_key(
+            &server.url(),
+            "key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            true, // report_data_binding
+            None,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_json_get_secret_request_omits_report_data_binding_when_false() {
+        // When report_data_binding is false the field must not appear in the body.
+        // JsonString performs exact JSON equality, so any extra field (including
+        // "report-data-binding") would cause the mock not to match and assert_async to fail.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"tee-type":"amd-sev-snp","nonce":"nonce","tee-evidence":"evidence","key-id":"key1","wrapping-key":"wrapping"}"#
+                    .to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key":"ok"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let result = tas_get_secret_key(
+            &server.url(),
+            "key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            false, // report_data_binding must not add the field
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_json_get_secret_request_includes_gpu_evidence_when_provided() {
+        let gpu_entries = serde_json::json!([
+            {"device_index": 0, "evidence": "gpu0_report"},
+            {"device_index": 1, "evidence": "gpu1_report"}
+        ]);
+
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"gpu-evidence":[{"device_index":0},{"device_index":1}]}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key":"ok"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let _ = tas_get_secret_key(
+            &server.url(),
+            "key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            false,
+            Some(&gpu_entries),
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_json_version_response_field_name() {
+        // The server returns {"version": "…"} and the client must extract that exact field.
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/version")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version":"2.0.0"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let result = tas_get_version(
+            &server.url(),
+            "key",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+        )
+        .await;
+        assert_eq!(result.unwrap(), r#""2.0.0""#);
+    }
+
+    #[tokio::test]
+    async fn test_json_nonce_response_field_name() {
+        // The server returns {"nonce": "…"} and the client must extract that exact field.
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/kb/v0/get_nonce")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"nonce":"deadbeef"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let result = tas_get_nonce(
+            &server.url(),
+            "key",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+        )
+        .await;
+        assert_eq!(result.unwrap(), r#""deadbeef""#);
+    }
+
+    #[tokio::test]
+    async fn test_json_secret_response_field_name() {
+        // The server returns {"secret_key": "…"} and the client must extract that exact field.
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/kb/v0/get_secret")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"secret_key":"base64encryptedkey"}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let result = tas_get_secret_key(
+            &server.url(),
+            "key",
+            "nonce",
+            "evidence",
+            "amd-sev-snp",
+            "key1",
+            "wrapping",
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            false,
+            None,
+        )
+        .await;
+        assert_eq!(result.unwrap(), r#""base64encryptedkey""#);
+    }
 }

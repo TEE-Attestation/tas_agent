@@ -71,7 +71,10 @@ fn resolve_gpu_attestation_mode(
 
 #[cfg(feature = "gpu-attestation")]
 use base64::{engine::general_purpose, Engine};
-use crypto::{compute_report_data_binding, decrypt_secret_with_aes_key, generate_wrapping_key};
+use crypto::{
+    compute_report_data_binding, decrypt_secret_with_aes_key, generate_wrapping_key,
+    unwrap_secret_with_aes_key_wrap,
+};
 #[cfg(feature = "gpu-attestation")]
 use crypto::{compute_report_data_binding_with_gpu, hash_gpu_evidence};
 #[cfg(feature = "gpu-attestation")]
@@ -446,15 +449,26 @@ async fn main() {
     };
     debug!("Unwrapped secret key: {:?}", aes_key.hex_dump());
 
-    // Decrypt the secret payload using the unwrapped AES key
-    debug!("Decrypting secret payload...");
-    let decrypted_payload =
+    // Decrypt the secret using the algorithm that was used to wrap it
+    debug!("Decrypting secret using algorithm: {}", secret.algorithm);
+    let decrypted_payload = if secret.algorithm == "AES-KWP" {
+        debug!("Using AES Key Wrap to unwrap secret");
+        match unwrap_secret_with_aes_key_wrap(&aes_key, &secret.blob) {
+            Ok(payload) => payload,
+            Err(err) => {
+                eprintln!("AES Key Wrap Decrypt Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        debug!("Using AES-GCM to decrypt secret");
         match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag) {
-            Ok(decrypted_payload) => decrypted_payload,
+            Ok(payload) => payload,
             Err(err) => {
                 eprintln!("Crypto Decrypt Error: {}", err);
                 std::process::exit(1);
             }
-        };
+        }
+    };
     println!("{}", String::from_utf8_lossy(&decrypted_payload));
 }
