@@ -18,6 +18,35 @@ pub struct SecretsPayload {
     pub iv: Vec<u8>,
     #[serde(deserialize_with = "deserialize_base64")]
     pub tag: Vec<u8>,
+    #[serde(
+        default = "default_algorithm",
+        deserialize_with = "deserialize_base64_to_string_optional"
+    )]
+    pub algorithm: String,
+}
+
+fn default_algorithm() -> String {
+    "AES-GCM".to_string()
+}
+
+fn deserialize_base64_to_string_optional<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(d)?;
+    match opt {
+        Some(base64_string) => {
+            if base64_string.is_empty() {
+                return Ok(default_algorithm());
+            }
+            let decoded_bytes = general_purpose::STANDARD
+                .decode(&base64_string)
+                .map_err(|e| serde::de::Error::custom(format!("Base64 decoding error: {}", e)))?;
+            String::from_utf8(decoded_bytes)
+                .map_err(|e| serde::de::Error::custom(format!("UTF-8 conversion error: {}", e)))
+        }
+        None => Ok(default_algorithm()),
+    }
 }
 
 fn deserialize_base64<'de, D, T>(d: D) -> Result<T, D::Error>

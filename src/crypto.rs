@@ -16,6 +16,8 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 
+use aes_kw::KekAes256;
+
 use sha2::{Digest, Sha512};
 use std::error::Error;
 
@@ -155,6 +157,70 @@ pub fn encrypt_secret_with_aes_key(
         .map_err(|e| format!("Encryption error: {:?}", e))?;
 
     Ok((plaintext.to_vec(), tag.to_vec()))
+}
+
+/// Wrap a secret using AES Key Wrapping with Padding (RFC 5649)
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn wrap_secret_with_aes_key_wrap(
+    aes_key: &[u8],
+    secret: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if aes_key.len() != 32 {
+        return Err(format!("AES key must be 32 bytes, got {} bytes", aes_key.len()).into());
+    }
+
+    if secret.is_empty() {
+        return Err("Secret cannot be empty".into());
+    }
+
+    let key_array: [u8; 32] = aes_key
+        .try_into()
+        .map_err(|_| "Failed to convert AES key to 32-byte array")?;
+
+    let kek = KekAes256::from(key_array);
+
+    // RFC 5649: output length = ceil(input_len / 8) * 8 + 8
+    let padded_len = secret.len().div_ceil(8) * 8;
+    let output_len = padded_len + 8;
+    let mut wrapped_buffer = vec![0u8; output_len];
+
+    kek.wrap_with_padding(secret, &mut wrapped_buffer)
+        .map_err(|e| -> Box<dyn Error> {
+            format!("AES Key Wrap wrapping failed: {:?}", e).into()
+        })?;
+
+    Ok(wrapped_buffer)
+}
+
+/// Unwrap a secret that was wrapped using AES Key Wrapping with Padding (RFC 5649)
+pub fn unwrap_secret_with_aes_key_wrap(
+    aes_key: &[u8],
+    wrapped_secret: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if aes_key.len() != 32 {
+        return Err(format!("AES key must be 32 bytes, got {} bytes", aes_key.len()).into());
+    }
+
+    let key_array: [u8; 32] = aes_key
+        .try_into()
+        .map_err(|_| "Failed to convert AES key to 32-byte array")?;
+
+    let kek = KekAes256::from(key_array);
+
+    if wrapped_secret.len() < 16 {
+        return Err("Wrapped secret too short for AES Key Wrap with Padding".into());
+    }
+
+    let max_unwrapped_size = wrapped_secret.len() - 8;
+    let mut unwrapped_buffer = vec![0u8; max_unwrapped_size];
+
+    let unwrapped_slice = kek
+        .unwrap_with_padding(wrapped_secret, &mut unwrapped_buffer)
+        .map_err(|e| -> Box<dyn Error> {
+            format!("AES Key Wrap unwrapping failed: {:?}", e).into()
+        })?;
+
+    Ok(unwrapped_slice.to_vec())
 }
 
 /// Computes SHA-512(nonce || pubkey_der) for CPU-only key binding.
@@ -410,5 +476,118 @@ mod tests {
         let pubkey_der = rsa_key.public_key_to_der().unwrap();
         let binding = compute_report_data_binding(b"", &pubkey_der);
         assert_eq!(binding.len(), 64);
+    }
+
+    // --- AES Key Wrapping tests ---
+
+    #[test]
+    fn test_aes_kw_wrap_basic() {
+        let aes_key = [42u8; 32];
+        let secret = b"Hello, World!"; // 13 bytes
+        let wrapped = wrap_secret_with_aes_key_wrap(&aes_key, secret).unwrap();
+        // RFC 5649: ceil(13/8)*8 + 8 = 16 + 8 = 24 bytes
+        assert_eq!(wrapped.len(), 24);
+    }
+
+    #[test]
+    fn test_aes_kw_roundtrip_small_secret() {
+        // 1–7 bytes is the maximum-padding case: padded to 8, output is 16
+        let aes_key = [0x77u8; 32];
+        let secret = b"tiny".to_vec(); // 4 bytes
+        let wrapped = wrap_secret_with_aes_key_wrap(&aes_key, &secret).unwrap();
+        assert_eq!(wrapped.len(), 16); // ceil(4/8)*8 + 8
+        let unwrapped = unwrap_secret_with_aes_key_wrap(&aes_key, &wrapped).unwrap();
+        assert_eq!(unwrapped, secret);
+    }
+
+    #[test]
+    fn test_aes_kw_roundtrip_16_bytes() {
+        let aes_key = [0x00u8; 32];
+        let secret = b"0123456789abcdef".to_vec();
+        let wrapped = wrap_secret_with_aes_key_wrap(&aes_key, &secret).unwrap();
+        let unwrapped = unwrap_secret_with_aes_key_wrap(&aes_key, &wrapped).unwrap();
+        assert_eq!(unwrapped, secret);
+    }
+
+    #[test]
+    fn test_aes_kw_roundtrip_32_bytes() {
+        let aes_key = [0xFFu8; 32];
+        let secret = (0u8..32).collect::<Vec<u8>>();
+        let wrapped = wrap_secret_with_aes_key_wrap(&aes_key, &secret).unwrap();
+        let unwrapped = unwrap_secret_with_aes_key_wrap(&aes_key, &wrapped).unwrap();
+        assert_eq!(unwrapped, secret);
+    }
+
+    #[test]
+    fn test_aes_kw_roundtrip_64_bytes() {
+        let aes_key = [0xAAu8; 32];
+        let secret = (0u8..64).collect::<Vec<u8>>();
+        let wrapped = wrap_secret_with_aes_key_wrap(&aes_key, &secret).unwrap();
+        let unwrapped = unwrap_secret_with_aes_key_wrap(&aes_key, &wrapped).unwrap();
+        assert_eq!(unwrapped, secret);
+    }
+
+    #[test]
+    fn test_aes_kw_different_keys_produce_different_ciphertext() {
+        let key1 = [0x00u8; 32];
+        let key2 = [0xFFu8; 32];
+        let secret = b"test_secret_data";
+        let wrapped1 = wrap_secret_with_aes_key_wrap(&key1, secret).unwrap();
+        let wrapped2 = wrap_secret_with_aes_key_wrap(&key2, secret).unwrap();
+        assert_ne!(wrapped1, wrapped2);
+    }
+
+    #[test]
+    fn test_aes_kw_same_inputs_produce_same_ciphertext() {
+        let aes_key = [0x12u8; 32];
+        let secret = b"consistent_data";
+        let wrapped1 = wrap_secret_with_aes_key_wrap(&aes_key, secret).unwrap();
+        let wrapped2 = wrap_secret_with_aes_key_wrap(&aes_key, secret).unwrap();
+        assert_eq!(wrapped1, wrapped2);
+    }
+
+    #[test]
+    fn test_aes_kw_wrap_rejects_wrong_key_length() {
+        let bad_key = [0u8; 16]; // 128-bit, must be 256-bit
+        let result = wrap_secret_with_aes_key_wrap(&bad_key, b"test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_aes_kw_wrap_rejects_empty_secret() {
+        let result = wrap_secret_with_aes_key_wrap(&[0u8; 32], b"");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_aes_kw_unwrap_rejects_wrong_key_length() {
+        let bad_key = [0u8; 16];
+        let result = unwrap_secret_with_aes_key_wrap(&bad_key, &[0u8; 24]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_aes_kw_unwrap_rejects_too_short() {
+        let result = unwrap_secret_with_aes_key_wrap(&[0u8; 32], &[0u8; 15]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aes_kw_unwrap_detects_corruption() {
+        let aes_key = [0xAAu8; 32];
+        let mut wrapped = wrap_secret_with_aes_key_wrap(&aes_key, b"test_secret_123").unwrap();
+        wrapped[0] ^= 0xFF; // flip bits in the integrity-protected header
+        assert!(unwrap_secret_with_aes_key_wrap(&aes_key, &wrapped).is_err());
+    }
+
+    #[test]
+    fn test_aes_kw_unwrap_rejects_wrong_key() {
+        let key1 = [0x11u8; 32];
+        let key2 = [0x22u8; 32];
+        let wrapped = wrap_secret_with_aes_key_wrap(&key1, b"sensitive_data").unwrap();
+        assert!(unwrap_secret_with_aes_key_wrap(&key2, &wrapped).is_err());
     }
 }
