@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# Copyright 2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+# initramfs-tools local-bottom script for TAS Agent
+#
+# Cleans up the background TAS agent loop started in local-top.
+
+PREREQ=""
+prereqs()
+{
+    echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+# Kill the background TAS agent loop
+if [ -f /run/tas_agent.pid ]; then
+    pid=$(cat /run/tas_agent.pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        # Also kill any child processes
+        pkill -P "$pid" 2>/dev/null || true
+    fi
+    rm -f /run/tas_agent.pid
+fi
+
+# Clean up log
+rm -f /tmp/tas_agent.log

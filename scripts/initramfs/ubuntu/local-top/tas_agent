@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Copyright 2025-2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+# initramfs-tools local-top script for TAS Agent
+#
+# Starts tas_agent in --passfifo mode, which handles the full
+# passfifo protocol internally: scanning /proc for cryptsetup
+# askpass processes, fetching the LUKS key from TAS, and writing
+# it to the passfifo. The passphrase never passes through shell
+# variables.
+#
+# The agent writes status messages directly to /dev/kmsg and
+# /tmp/tas_agent.log (like clevis-luks-askpass), so no pipe
+# wrapper is needed. This avoids timing issues where pipe
+# buffering could delay or lose log messages.
+#
+# If TAS agent fails, the normal askpass TTY prompt remains
+# active for manual passphrase entry.
+
+PREREQ=""
+prereqs()
+{
+    echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /scripts/functions
+
+# Configure networking (needed to reach TAS server)
+# Only do this if not already configured (e.g. by ip= boot param)
+if ! ip route show 2>/dev/null | grep -q default; then
+    configure_networking 2>/dev/null || true
+fi
+
+log_begin_msg "TAS Agent: starting passfifo watcher"
+
+# Run directly in background (like clevis-luks-askpass).
+# The agent handles its own logging to /dev/kmsg and /tmp/tas_agent.log.
+/usr/sbin/tas_agent --passfifo &
+echo $! > /run/tas_agent.pid
+
+log_end_msg

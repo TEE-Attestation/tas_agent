@@ -28,7 +28,12 @@ use std::error::Error;
 
 #[derive(Debug, Clone)]
 
-/// Struct to hold the RSA key pair
+/// Ephemeral RSA key pair used to wrap/unwrap secrets from the TAS server.
+///
+/// Generated fresh for each key-fetch request. The public key is sent to TAS
+/// as part of the attestation flow; TAS wraps the secret with RSA-OAEP using
+/// this public key. The agent then unwraps with the private key and decrypts
+/// the AES-256-GCM payload.
 pub struct RsaKey {
     public_key: RsaPublicKey,
     private_key: RsaPrivateKey,
@@ -122,9 +127,9 @@ pub fn decrypt_secret_with_aes_key(
     if aes_key.len() != 32 {
         return Err("AES key length must be 32 bytes (256 bits)".into());
     }
-    // Check if the IV length is 16 bytes (128 bits)
+    // Check if the IV length is 12 bytes (96 bits) per GCM spec
     if iv.len() != 12 {
-        return Err("AES-GCM IV length must be 16 bytes (128 bits)".into());
+        return Err("AES-GCM IV length must be 12 bytes (96 bits)".into());
     }
 
     let cipher = Aes256Gcm::new_from_slice(aes_key)?;

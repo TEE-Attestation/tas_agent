@@ -1,0 +1,34 @@
+Source: tas-agent
+Section: admin
+Priority: optional
+Maintainer: TAS <tas@tee-attestation.dev>
+Build-Depends: debhelper (>= 12), cargo, rustc, pkg-config, libssl-dev
+Standards-Version: 4.6.0
+
+Package: tas-agent
+Architecture: amd64
+Depends: systemd, cryptsetup, ${shlibs:Depends}, ${misc:Depends}
+Recommends: tas-agent-dracut | tas-agent-initramfs
+Description: TEE Attestation Service Agent
+ Agent for fetching LUKS encryption keys from the TEE Attestation Service
+ using hardware-based TEE attestation (AMD SEV-SNP, Intel TDX).
+ Integrates with systemd ask-password for automatic LUKS volume unlock
+ during boot, with TTY fallback on failure.
+
+Package: tas-agent-initramfs
+Architecture: all
+Depends: tas-agent, initramfs-tools, cryptsetup-initramfs, ${misc:Depends}
+Description: TAS Agent initramfs-tools integration
+ Hooks and scripts for integrating TAS Agent into initramfs-tools based
+ initrd images for automatic LUKS unlock during early boot.
+ .
+ Note: SEV-SNP/TDX attestation requires the sev-guest or tdx-guest kernel
+ modules, which are shipped in the linux-modules-extra package. Install
+ linux-modules-extra for your kernel version if not already present.
+
+Package: tas-agent-dracut
+Architecture: all
+Depends: tas-agent, dracut, dracut-network, ${misc:Depends}
+Description: TAS Agent dracut integration
+ Dracut module for integrating TAS Agent into dracut-based initrd images
+ for automatic LUKS unlock during early boot.
