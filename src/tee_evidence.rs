@@ -45,8 +45,14 @@ fn get_tee_type(tsm_report_dir: &TempDir) -> Result<String, Box<dyn Error>> {
 // If the file cannot be read, it returns an error.
 fn get_vmpl() -> Result<String, Box<dyn Error>> {
     let vmpl_file_path = "/sys/devices/system/cpu/sev/vmpl";
-    let vmpl = fs::read_to_string(vmpl_file_path)?;
-    Ok(vmpl)
+    match fs::read_to_string(vmpl_file_path) {
+        Ok(vmpl) => Ok(vmpl),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            debug!("VMPL sysfs file not found, defaulting to VMPL 0");
+            Ok("0".to_string())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Function to generate TEE evidence and return the TEE type

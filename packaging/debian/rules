@@ -1,0 +1,33 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --features askpass,passfifo
+
+override_dh_auto_install:
+	# --- tas-agent (core) ---
+	install -Dm755 target/release/tas_agent debian/tas-agent/usr/sbin/tas_agent
+	install -Dm755 scripts/tas-luks-bind debian/tas-agent/usr/sbin/tas-luks-bind
+	install -Dm644 config/config.toml.sample debian/tas-agent/etc/tas_agent/config.toml
+	install -Dm600 config/api-key.sample debian/tas-agent/etc/tas_agent/api-key
+	install -Dm644 scripts/systemd/tas-agent-askpass.service debian/tas-agent/usr/lib/systemd/system/tas-agent-askpass.service
+	install -Dm644 scripts/systemd/tas-agent-askpass.path debian/tas-agent/usr/lib/systemd/system/tas-agent-askpass.path
+	install -Dm644 scripts/systemd/tas-agent-network.service debian/tas-agent/usr/lib/systemd/system/tas-agent-network.service
+	install -Dm644 scripts/systemd/modules-load.d/tas-agent.conf debian/tas-agent/etc/modules-load.d/tas-agent.conf
+	# --- tas-agent-initramfs ---
+	install -Dm755 scripts/initramfs/ubuntu/hooks/tas_agent debian/tas-agent-initramfs/usr/share/initramfs-tools/hooks/tas-agent
+	install -Dm755 scripts/initramfs/ubuntu/local-top/tas_agent debian/tas-agent-initramfs/usr/share/initramfs-tools/scripts/local-top/tas_agent
+	install -Dm755 scripts/initramfs/ubuntu/local-bottom/tas_agent debian/tas-agent-initramfs/usr/share/initramfs-tools/scripts/local-bottom/tas_agent
+	install -Dm644 scripts/initramfs/ubuntu/modules debian/tas-agent-initramfs/usr/share/initramfs-tools/modules.d/tas-agent
+	# --- tas-agent-dracut ---
+	install -Dm755 scripts/dracut/module-setup.sh debian/tas-agent-dracut/usr/lib/dracut/modules.d/50tas-agent/module-setup.sh
+	install -Dm755 scripts/dracut/tas-net-setup.sh debian/tas-agent-dracut/usr/lib/dracut/modules.d/50tas-agent/tas-net-setup.sh
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	cargo test --features askpass,passfifo
+endif
+
+override_dh_auto_clean:
+	cargo clean

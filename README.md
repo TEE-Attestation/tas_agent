@@ -1,69 +1,50 @@
 # TAS Agent
+TAS Agent is a Rust program that runs inside a
+Confidential Virtual Machine (CVM). It attests the state of the CVM to a
+remote [TAS server](https://github.com/TEE-Attestation/tas) using a
+hardware Trusted Execution Environment (TEE) attestation report, and receives encrypted secrets in return.
 
-## Build Instructions
+The TAS Server is configured such that a CVM only receives the secrets, such as a LUKS passphrase to unlock the root volume, if it is successfully verified.
 
-### CPU-Only Attestation (Default)
+**How it works:**
 
-The default build includes CPU TEE attestation (AMD SEV-SNP / Intel TDX) with
-public-key binding. This produces the smallest binary, suitable for
-resource-constrained environments such as pre-boot attestation from an initrd.
+1. The agent creates a temporary key pair.
+2. It collects a hardware TEE attestation report from the CPU (AMD SEV-SNP or Intel TDX).
+3. It sends the report and the public key to the TAS server.
+4. The server checks the report. If valid, it encrypts the secrets with the public key and sends them back.
 
-```bash
-cargo build --release
-```
+TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Nvidia GPU attestation is coming soon.
 
-### With GPU Attestation Support
 
-To include GPU attestation support (composable CPU + GPU attestation), enable the
-`gpu-attestation` feature:
 
-```bash
-cargo build --release --features gpu-attestation
-```
 
-> **Note:** GPU attestation is currently a stub and not yet implemented. The
-> `GpuEvidenceProvider` trait and detection framework are in place, but no
-> concrete GPU provider (e.g. NVIDIA) is functional yet. Enabling the feature
-> adds the composable attestation code path but GPU evidence collection will
-> fail at runtime until a provider is implemented.
+## Use Cases
 
-### Package Build
+- **[LUKS volume unlocking](docs/LUKS.md)** — Automatically unlock
+  LUKS-encrypted volumes at boot using TEE attestation instead of a
+  password. Supports dracut, initramfs-tools, and systemd.
+- **Secret retrieval** — Fetch any TAS-managed secret for use by
+  applications running inside a CVM.
+- **X.509 certificate issuance** *(coming soon)* — Generate a CSR and
+  submit it alongside a TEE attestation report to a compatible TAS server.
+  After passing verification, the server issues an X.509 certificate that
+  can be used for (m)TLS and to fetch secrets.
 
-To build a package for installation (e.g. in /opt/tas), run the following command:
-
-```bash
-./build.sh
-```
-
-The tas_agent package will be created in the ./target/package directory.
-Copy the .tgz file generated to the target VM's /opt/tas directory.
-
-## Unit Tests
-
-Unit tests are run via the `cargo test` command.
-
-To run tests including GPU attestation tests:
-
-```bash
-cargo test --features gpu-attestation
-```
-
-## Execution Instructions
-
-The `tas_agent` application is configured via a configuration file (`config.toml`) and/or command-line arguments. Command-line arguments take precedence over the configuration file.
+## Configuration
 
 ### Configuration File
 
-The default configuration file path is `/etc/tas_agent/config.toml`. An example configuration file is provided in `config/config.toml.sample`:
+Default path: `/etc/tas_agent/config.toml`
 
 ```toml
-# The URI of the TAS REST service
-server_uri = "http://X.X.X.X:5000"
+# The URI of the TAS REST service (http:// or https://)
+server_uri = "https://tas.example.com:5000"
 
 # Path to the API key for the TAS REST service
 api_key = "/etc/tas_agent/api-key"
 
 # Path to the CA root certificate signing the TAS REST service cert
+# (only required for https:// URIs)
 cert_path = "/etc/tas_agent/root_cert.pem"
 
 # Policy ID to request from the TAS REST service
@@ -77,98 +58,128 @@ policy_id = "..."
 
 # Maximum backoff time in seconds between retries (default: 30)
 # retry_max_backoff_secs = 30
-
-# GPU attestation mode: "auto" or "disabled" (default: "auto")
-# Requires the gpu-attestation feature to be enabled at build time
-# gpu_attestation = "auto"
 ```
-
-If using TLS, ensure that `server_uri` specifies `https`.
 
 ### Command-Line Options
 
 | Option | Description |
 |---|---|
-| `-d`, `--debug` | Display debugging messages |
+| `-d`, `--debug` |  Display debugging messages (do not use in production — logs sensitive data) |
 | `-c`, `--config <FILE>` | Path to the config file (default: `/etc/tas_agent/config.toml`) |
 | `--server-uri <URI>` | The URI of the TAS REST service |
 | `--api-key <FILE>` | Path to the API key for the TAS REST service |
 | `--policy-id <ID>` | Policy ID to request from the TAS REST service |
-| `--cert-path <FILE>` | Path to the CA root certificate signing the TAS REST service cert |
+| `--cert-path <FILE>` | Path to the CA root certificate signing the TAS REST service cert (HTTPS only) |
 | `--max-retries <N>` | Maximum number of retry attempts for HTTP requests (default: 3) |
 | `--retry-min-backoff-secs <SECS>` | Minimum backoff time in seconds between retries (default: 1) |
 | `--retry-max-backoff-secs <SECS>` | Maximum backoff time in seconds between retries (default: 30) |
 | `--no-key-binding` | Disable public-key binding in TEE report data (for legacy TAS servers) |
 | `--gpu-attestation <MODE>` | GPU attestation mode: `auto` (default) or `disabled` (requires `gpu-attestation` feature) |
+| `--askpass` | systemd ask-password watcher mode (requires `askpass` feature) |
+| `--passfifo` | initramfs-tools passfifo watcher mode (requires `passfifo` feature) |
 
-### Running
+## Build Instructions
 
-Run the `tas_agent` program with a config file:
+### Default (CPU-only attestation)
 
 ```bash
-sudo ./target/debug/tas_agent -c config/config.toml
+cargo build --release
 ```
 
-Example output:
+### With Askpass Support (LUKS unlock via dracut/systemd)
 
+```bash
+cargo build --release --features askpass
 ```
 Policy-ID: 771e76e7924348899ef751d0754c9060dd805928d03043f29a065275f4f883c8
 Value: "30786465616462656566"
+
+### With Passfifo Support (LUKS unlock via initramfs-tools)
+
+```bash
+cargo build --release --features passfifo
 ```
-## HTTP Retry Strategy
 
-The TAS agent automatically retries HTTP requests that fail with transient errors using
-**exponential backoff with full jitter**.
+### With GPU Attestation Support
 
-### Retryable Status Codes
+```bash
+cargo build --release --features gpu-attestation
+```
 
-The following HTTP status codes are considered transient and will be retried:
+> **Note:** GPU attestation is currently a stub. The `GpuEvidenceProvider`
+> trait is in place, but no concrete GPU provider is functional yet.
 
-| Status Code | Meaning |
-|---|---|
-| 408 | Request Timeout |
-| 429 | Too Many Requests |
-| 500 | Internal Server Error |
-| 502 | Bad Gateway |
-| 503 | Service Unavailable |
-| 504 | Gateway Timeout |
+### Package Build
 
-Non-transient errors (e.g. 400 Bad Request, 401 Unauthorized, 404 Not Found) are **not** retried.
+Package installation is the preferred deployment method. The `.deb` and
+`.rpm` packages include the expected initramfs and systemd integration
+artifacts and run the usual package-manager lifecycle hooks.
 
-### Backoff Strategy
+#### Prerequisites
 
-The retry delay between attempts follows an **exponential backoff** pattern with **full jitter**:
+```bash
+# Debian/Ubuntu — install build dependencies (for .deb packages)
+sudo apt-get install -y dpkg-dev debhelper fakeroot cargo rustc pkg-config libssl-dev
 
-- The base delay doubles with each retry attempt (1s, 2s, 4s, 8s, ...)
-- **Full jitter** randomizes the actual delay between 0 and the calculated backoff value,
-  reducing the chance of multiple clients retrying at the same instant
-- The delay is clamped between `retry_min_backoff_secs` and `retry_max_backoff_secs`
+# Debian/Ubuntu — install additional dependencies for .rpm builds
+sudo apt-get install -y rpm elfutils
 
-### Configuration
+# Fedora/RHEL — install build dependencies
+sudo dnf install -y rpm-build cargo rust pkg-config openssl-devel
+```
 
-Retry behavior is configurable via `config.toml` or command-line arguments.
-Command-line arguments take precedence over the configuration file.
+#### Build Packages
 
-| Parameter | Config Key | CLI Flag | Default | Description |
-|---|---|---|---|---|
-| Max retries | `max_retries` | `--max-retries` | 3 | Number of retry attempts after the initial request fails |
-| Min backoff | `retry_min_backoff_secs` | `--retry-min-backoff-secs` | 1 second | Lower bound for the retry delay |
-| Max backoff | `retry_max_backoff_secs` | `--retry-max-backoff-secs` | 30 seconds | Upper bound for the retry delay |
+```bash
+# Debian/Ubuntu (.deb)
+./build.sh --deb
 
-With the defaults (3 retries, 1–30s backoff), worst-case total additional delay is approximately
-1s + 2s + 4s = 7s before jitter. The full jitter randomization means actual delays will typically
-be shorter.
+# Fedora/RHEL (.rpm)
+./build.sh --rpm
+```
 
-To disable retries entirely, set `max_retries = 0`.
+### Tarball Build
 
-### Example
+Running `./build.sh --tarball` produces a tarball at
+`target/package/tas_agent.tar.gz`.
 
-```toml
-# Retry up to 5 times with backoff between 2s and 60s
-max_retries = 5
-retry_min_backoff_secs = 2
-retry_max_backoff_secs = 60
+The `-d`, `-r`, `-e`, and `-a` options apply to the tarball build. Use them
+to change the tarball output directory or the config files bundled into the
+tarball build.
+
+Use the tarball only for manual installation, local testing, or debugging.
+It is not the preferred installation path; package installs are preferred
+because they better match the supported deployment flow.
+
+## Testing
+
+### Unit Tests
+
+```bash
+cargo test --features askpass,passfifo
+```
+
+### Integration Tests
+
+Integration tests live in a separate repository: [TEE-Attestation/tas_agent_tests](https://github.com/TEE-Attestation/tas_agent_tests).
+
+Clone it under the project root:
+
+```bash
+cd tas_agent
+git clone git@github.com:TEE-Attestation/tas_agent_tests.git testing
+```
+
+Then follow the instructions in `testing/README.md`:
+
+```bash
+# Chroot-based VM tests (SEV-SNP / TDX)
+cd testing && python3 run_tests.py --initrd ubuntu-dracut --test all
+
+# Interactive VM launcher (for debugging, manual passphrase entry)
+cd testing && python3 launch_tdx.py --console --image tas-agent-test-ubuntu-dracut.qcow2
 ```
 
 ## Contributing
-Contributing to the project is simple! Just send a pull request through GitHub. For detailed instructions on formatting your changes and following our contribution guidelines, take a look at the [CONTRIBUTING](./CONTRIBUTING.md) file.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

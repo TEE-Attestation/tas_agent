@@ -2033,12 +2033,14 @@ dependencies = [
  "reqwest-retry",
  "retry-policies",
  "rsa",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
  "toml",
+ "zeroize",
 ]
 
 [[package]]
