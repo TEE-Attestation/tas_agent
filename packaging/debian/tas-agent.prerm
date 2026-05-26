@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+systemctl disable tas-agent-askpass.path || true
+systemctl stop tas-agent-askpass.path tas-agent-askpass.service || true

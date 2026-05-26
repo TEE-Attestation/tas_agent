@@ -1,0 +1,17 @@
+# Copyright 2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+[Unit]
+Description=TAS Agent Network Setup (initrd DHCP)
+DefaultDependencies=no
+After=systemd-udev-trigger.service systemd-modules-load.service
+Before=cryptsetup.target
+ConditionPathExists=/etc/initrd-release
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tas-net-setup.sh
+StandardOutput=kmsg
+StandardError=kmsg
+TimeoutStartSec=60

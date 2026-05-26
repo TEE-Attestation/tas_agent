@@ -118,12 +118,12 @@ if [ $REMOVE -eq 1 ]; then
     echo "Removing tas_agent from $DESTDIR"
     rm -rf "$DESTDIR/sbin/tas_agent"
     rm -rf "$DESTDIR/etc/tas_agent"
-    if [ -e "$DESTDIR/usr/share/initramfs-tools/hooks/tas_kbm_ctl" ]; then
-        rm -rf "$DESTDIR/usr/share/initramfs-tools/hooks/tas_kbm_ctl"
+    if [ -e "$DESTDIR/usr/share/initramfs-tools/hooks/tas_agent" ]; then
+        rm -rf "$DESTDIR/usr/share/initramfs-tools/hooks/tas_agent"
         INITRD_ARTIFACTS=1
     fi
-    if [ -e "$DESTDIR/usr/share/initramfs-tools/scripts/init-premount/tas_kbm_ctl" ]; then
-        rm -rf "$DESTDIR/usr/share/initramfs-tools/scripts/init-premount/tas_kbm_ctl"
+    if [ -e "$DESTDIR/usr/share/initramfs-tools/scripts/init-premount/tas_agent" ]; then
+        rm -rf "$DESTDIR/usr/share/initramfs-tools/scripts/init-premount/tas_agent"
         INITRD_ARTIFACTS=1
     fi
     if [ -e "$DESTDIR/etc/initramfs-tools/modules" ]; then

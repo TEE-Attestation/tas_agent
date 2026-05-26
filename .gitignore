@@ -15,3 +15,29 @@ target/
 
 # Ignore IDE project files
 .vscode/
+# mkosi build artifacts
+testing/mkosi/*.raw
+testing/mkosi/*.efi
+testing/mkosi/*.vmlinuz
+testing/mkosi/*.initrd
+testing/mkosi/*.cpio.zst
+testing/mkosi/initrd
+testing/mkosi/tas-agent-test
+testing/mkosi/mkosi.tools/
+testing/mkosi/mkosi.tools.manifest
+
+# Debian packaging build artifacts
+packaging/debian/.debhelper/
+packaging/debian/debhelper-build-stamp
+packaging/debian/files
+packaging/debian/*.substvars
+packaging/debian/*.debhelper
+packaging/debian/tas-agent/
+packaging/debian/tas-agent-dracut/
+packaging/debian/tas-agent-initramfs/
+debian
+
+# Ignore tas-agen-tests folder
+tas-agent-tests/
+tas_agent_tests/
+testing/

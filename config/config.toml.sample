@@ -1,3 +1,9 @@
+# TAS Agent configuration file.
+# Copy to /etc/tas_agent/config.toml and edit.
+# See docs/LUKS.md for full documentation.
+#
+# Required fields: server_uri, key_id, api_key
+# Optional fields: cert_path (only for HTTPS), retry settings, mode flags
 
 # The URI of the TAS REST service
 server_uri = "http://X.X.X.X:5000"
@@ -19,3 +25,11 @@ policy_id = "..."
 
 # Maximum backoff time in seconds between retries (default: 30)
 # retry_max_backoff_secs = 30
+
+# Enable systemd ask-password watcher mode for automatic LUKS unlock
+# (requires the 'askpass' feature to be enabled at build time)
+# askpass = false
+
+# Enable initramfs-tools passfifo watcher mode for automatic LUKS unlock
+# (requires the 'passfifo' feature to be enabled at build time)
+# passfifo = false

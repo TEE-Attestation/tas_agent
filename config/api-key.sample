@@ -1,1 +1,9 @@
+# TAS API key — plain-text string, one line, no trailing newline.
+# Obtain from your TAS server administrator or web UI.
+#
+# This file MUST be readable only by root:
+#   sudo chmod 0600 /etc/tas_agent/api-key
+#   sudo chown root:root /etc/tas_agent/api-key
+#
+# Replace the placeholder below with your actual key:
 your-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56

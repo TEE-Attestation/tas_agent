@@ -1,0 +1,7 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: tas-agent
+Upstream-Contact: https://github.com/TEE-Attestation
+
+Files: *
+Copyright: 2026 Hewlett Packard Enterprise Development LP
+License: MIT

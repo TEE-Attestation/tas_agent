@@ -1,28 +1,114 @@
 #!/bin/sh
 #
-# Copyright 2025 Hewlett Packard Enterprise Development LP.
+# Copyright 2025-2026 Hewlett Packard Enterprise Development LP.
 # SPDX-License-Identifier: MIT
+#
+# initramfs-tools hook for tas_agent
+# Copies the tas_agent binary, config, systemd askpass units,
+# modules-load.d config, and kernel modules into the initramfs.
+
 PREREQ="cloud-initramfs-dyn-netconf"
 prereqs()
 {
   echo "$PREREQ"
 }
-				
+
 case $1 in
 prereqs)
   prereqs
   exit 0
   ;;
 esac
-				
+
 . /usr/share/initramfs-tools/hook-functions
 # Begin real processing below this line
-				
-# Copy the binary 
-copy_exec /sbin/tas_agent
 
-# Copy the config files 
-copy_file config /etc/tas_agent/config /etc/tas_agent/config
-copy_file config /etc/tas_agent/root_cert.pem /etc/tas_agent/root_cert.pem
+# Copy the binary
+copy_exec /usr/sbin/tas_agent /usr/sbin/tas_agent
+
+
+# DNS resolver libraries (needed for TAS server lookups in initrd)
+for so in $(ldconfig -p | sed -nr 's/^\s*libnss_files\.so\.[0-9]+\s.*=>\s*//p'); do
+    copy_exec "${so}"
+done
+for so in $(ldconfig -p | sed -nr 's/^\s*libnss_dns\.so\.[0-9]+\s.*=>\s*//p'); do
+    copy_exec "${so}"
+done
+
+# Copy the local-top and local-bottom boot scripts (Clevis-pattern passfifo watcher)
+if [ -f /usr/share/initramfs-tools/scripts/local-top/tas_agent ]; then
+    mkdir -p "$DESTDIR/scripts/local-top"
+    cp /usr/share/initramfs-tools/scripts/local-top/tas_agent "$DESTDIR/scripts/local-top/"
+    chmod 755 "$DESTDIR/scripts/local-top/tas_agent"
+fi
+if [ -f /usr/share/initramfs-tools/scripts/local-bottom/tas_agent ]; then
+    mkdir -p "$DESTDIR/scripts/local-bottom"
+    cp /usr/share/initramfs-tools/scripts/local-bottom/tas_agent "$DESTDIR/scripts/local-bottom/"
+    chmod 755 "$DESTDIR/scripts/local-bottom/tas_agent"
+fi
+
+# Copy the config files
+mkdir -p "$DESTDIR/etc/tas_agent"
+cp /etc/tas_agent/config.toml "$DESTDIR/etc/tas_agent/" 2>/dev/null || true
+cp /etc/tas_agent/api-key "$DESTDIR/etc/tas_agent/" 2>/dev/null || true
+# Restrict api-key permissions in initrd (matching dracut module-setup.sh)
+if [ -f "$DESTDIR/etc/tas_agent/api-key" ]; then
+    chmod 0600 "$DESTDIR/etc/tas_agent/api-key"
+fi
+cp /etc/tas_agent/root_cert.pem "$DESTDIR/etc/tas_agent/" 2>/dev/null || true
+
+# Copy CA certificates bundle (needed by reqwest for TLS and cert validation)
+if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    mkdir -p "$DESTDIR/etc/ssl/certs"
+    cp /etc/ssl/certs/ca-certificates.crt "$DESTDIR/etc/ssl/certs/"
+fi
+
+# In initramfs-tools, the local-top script drives the passfifo directly
+# (like clevis), so force stdout mode — not the systemd askpass watcher.
+if [ -f "$DESTDIR/etc/tas_agent/config.toml" ]; then
+    sed -i 's/^askpass.*/askpass = false/' "$DESTDIR/etc/tas_agent/config.toml"
+fi
+
+# Copy systemd askpass .path + .service units (clevis pattern)
+mkdir -p "$DESTDIR/usr/lib/systemd/system"
+if [ -f /usr/lib/systemd/system/tas-agent-askpass.service ]; then
+    cp /usr/lib/systemd/system/tas-agent-askpass.service "$DESTDIR/usr/lib/systemd/system/"
+    cp /usr/lib/systemd/system/tas-agent-askpass.path "$DESTDIR/usr/lib/systemd/system/"
+
+    # The .path watches /run/systemd/ask-password, triggered by cryptsetup.target
+    mkdir -p "$DESTDIR/usr/lib/systemd/system/cryptsetup.target.wants"
+    ln -sf ../tas-agent-askpass.path "$DESTDIR/usr/lib/systemd/system/cryptsetup.target.wants/"
+fi
+
+# Copy modules-load.d config
+if [ -f /etc/modules-load.d/tas-agent.conf ]; then
+    mkdir -p "$DESTDIR/etc/modules-load.d"
+    cp /etc/modules-load.d/tas-agent.conf "$DESTDIR/etc/modules-load.d/"
+fi
+
+# Add kernel modules for configfs-tsm TEE attestation
+manual_add_modules configfs
+manual_add_modules tsm
+manual_add_modules tsm_report
+manual_add_modules sev-guest
+manual_add_modules tdx-guest
+
+# Warn if no TEE attestation module was found (sev-guest or tdx-guest)
+# These live in linux-modules-extra-* on Ubuntu
+if ! find "$DESTDIR/lib/modules" -name "sev-guest.ko*" 2>/dev/null | grep -q . && \
+   ! find "$DESTDIR/lib/modules" -name "tdx-guest.ko*" 2>/dev/null | grep -q .; then
+    echo "WARNING: tas-agent: no TEE attestation module (sev-guest/tdx-guest) found in initramfs." >&2
+    echo "WARNING: tas-agent: install linux-modules-extra-$(uname -r) for SEV-SNP/TDX support." >&2
+fi
+
+# Disable CoCo/credential-based LUKS auto-unlock so systemd-cryptsetup
+# falls through to the ask-password protocol (answered by TAS agent).
+if [ -d "$DESTDIR/usr/lib/systemd/system/systemd-cryptsetup@.service.d" ]; then
+    cat > "$DESTDIR/usr/lib/systemd/system/systemd-cryptsetup@.service.d/tas-no-cred.conf" <<DROPIN
+[Service]
+ImportCredential=
+LoadCredential=
+DROPIN
+fi
 
 exit 0

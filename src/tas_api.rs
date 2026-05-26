@@ -17,7 +17,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Retry configuration for HTTP requests
+/// Retry configuration for HTTP requests to the TAS server.
+///
+/// Uses exponential backoff with full jitter via `reqwest_retry`.
+/// Retryable status codes: 408, 429, 500, 502, 503, 504.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     pub max_retries: u32,
@@ -35,25 +38,33 @@ impl Default for RetryConfig {
     }
 }
 
-/// Helper function to create a `reqwest_middleware::ClientWithMiddleware` with custom root
+/// Helper function to create a `reqwest_middleware::ClientWithMiddleware` with optional root
 /// certificates and retry middleware configured with exponential backoff and jitter.
-fn create_client_with_root_cert(
+///
+/// When `server_uri` uses `https://`, the cert bundle at `cert_path` is loaded and added
+/// as trusted root certificates. For plain `http://` URIs the cert file is skipped,
+/// which avoids failures in initrd environments that lack a CA bundle.
+fn create_client(
+    server_uri: &str,
     cert_path: PathBuf,
     retry_config: &RetryConfig,
 ) -> Result<ClientWithMiddleware, String> {
-    // Load all certificates from the PEM bundle (may contain intermediate + root CA)
-    let cert_data =
-        fs::read(cert_path).map_err(|err| format!("Error reading certificate file: {}", err))?;
-    let certs = Certificate::from_pem_bundle(&cert_data)
-        .map_err(|err| format!("Error parsing certificate bundle: {}", err))?;
+    let mut builder = Client::builder()
+        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(15));
 
-    // Build the client with all certificates from the bundle
-    let mut builder = Client::builder();
-    for cert in certs {
-        builder = builder.add_root_certificate(cert);
+    // Only load certificates for HTTPS connections
+    if server_uri.starts_with("https://") {
+        let cert_data = fs::read(&cert_path)
+            .map_err(|err| format!("Error reading certificate file {:?}: {}", cert_path, err))?;
+        let certs = Certificate::from_pem_bundle(&cert_data)
+            .map_err(|err| format!("Error parsing certificate bundle: {}", err))?;
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
     }
+
     let client = builder
-        //.danger_accept_invalid_certs(true) // For Testing: Disable cert validation including hostname verification
         .build()
         .map_err(|err| format!("Error creating HTTP client: {}", err))?;
 
@@ -81,7 +92,7 @@ pub async fn tas_get_version(
     retry_config: &RetryConfig,
 ) -> Result<String, String> {
     let version_url = format!("{}/version", server_uri);
-    let client = create_client_with_root_cert(cert_path, retry_config)?;
+    let client = create_client(server_uri, cert_path, retry_config)?;
 
     match client
         .get(&version_url)
@@ -117,7 +128,7 @@ pub async fn tas_get_nonce(
     retry_config: &RetryConfig,
 ) -> Result<String, String> {
     let nonce_url = format!("{}/kb/v0/get_nonce", server_uri);
-    let client = create_client_with_root_cert(cert_path, retry_config)?;
+    let client = create_client(server_uri, cert_path, retry_config)?;
 
     match client
         .get(&nonce_url)
@@ -161,7 +172,7 @@ pub async fn tas_get_secret_key(
     gpu_evidence: Option<&serde_json::Value>,
 ) -> Result<String, String> {
     let secret_url = format!("{}/kb/v0/get_secret", server_uri);
-    let client = create_client_with_root_cert(cert_path, retry_config)?;
+    let client = create_client(server_uri, cert_path, retry_config)?;
 
     // Create the JSON body for the POST request
     let mut body = serde_json::json!({
