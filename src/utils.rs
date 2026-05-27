@@ -8,6 +8,15 @@
 use base64::{engine::general_purpose, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer};
 
+/// JSON payload returned by the TAS `get_secret` endpoint.
+///
+/// All fields are base64-encoded in the JSON response and automatically
+/// decoded during deserialization.
+///
+/// - `wrapped_key`: AES-256 key, RSA-OAEP-wrapped with the agent's ephemeral public key
+/// - `blob`: AES-256-GCM ciphertext containing the LUKS passphrase
+/// - `iv`: AES-GCM initialization vector (96 bits)
+/// - `tag`: AES-GCM authentication tag (128 bits)
 #[derive(Debug, Deserialize)]
 pub struct SecretsPayload {
     #[serde(deserialize_with = "deserialize_base64")]

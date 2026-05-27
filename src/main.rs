@@ -18,10 +18,13 @@ use pretty_hex::PrettyHex;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
-// Import the `tee_get_evidence` function from the `tee_evidence` module
+#[cfg(feature = "askpass")]
+mod askpass;
 mod crypto;
 #[cfg(feature = "gpu-attestation")]
 mod gpu_evidence;
+#[cfg(feature = "passfifo")]
+mod passfifo;
 mod tas_api;
 mod tee_evidence;
 mod utils;
@@ -82,6 +85,7 @@ use gpu_evidence::detect_gpu_providers;
 use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version, RetryConfig};
 use tee_evidence::tee_get_evidence;
 use utils::SecretsPayload;
+use zeroize::Zeroize;
 
 struct SimpleLogger;
 
@@ -143,6 +147,16 @@ struct Cli {
     #[cfg(feature = "gpu-attestation")]
     #[arg(long, value_enum, default_value_t = GpuAttestationMode::Auto)]
     gpu_attestation: GpuAttestationMode,
+
+    /// Enable systemd ask-password watcher mode for automatic LUKS unlock
+    #[cfg(feature = "askpass")]
+    #[arg(long)]
+    askpass: bool,
+
+    /// Enable initramfs-tools passfifo watcher mode for automatic LUKS unlock
+    #[cfg(feature = "passfifo")]
+    #[arg(long)]
+    passfifo: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -157,6 +171,12 @@ struct Config {
     /// GPU attestation mode: "auto", "disabled" (default: "auto")
     #[cfg(feature = "gpu-attestation")]
     gpu_attestation: Option<String>,
+    /// Enable systemd ask-password watcher mode
+    #[cfg(feature = "askpass")]
+    askpass: Option<bool>,
+    /// Enable initramfs-tools passfifo watcher mode
+    #[cfg(feature = "passfifo")]
+    passfifo: Option<bool>,
 }
 
 fn load_config(path: Option<PathBuf>) -> Result<Config> {
@@ -176,119 +196,112 @@ fn load_config(path: Option<PathBuf>) -> Result<Config> {
     toml::from_str(&data).with_context(|| format!("unable to load {:?}", config_path))
 }
 
-static LOGGER: SimpleLogger = SimpleLogger;
+/// Optional CLI overrides for use when calling fetch_key() from askpass mode
+/// or other non-CLI contexts.
+pub struct CliOverrides {
+    pub server_uri: Option<String>,
+    pub api_key: Option<PathBuf>,
+    pub key_id: Option<String>,
+    pub cert_path: Option<PathBuf>,
+    pub max_retries: Option<u32>,
+    pub retry_min_backoff_secs: Option<u64>,
+    pub retry_max_backoff_secs: Option<u64>,
+}
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
+/// Core key-fetch logic: loads config, contacts TAS, retrieves and decrypts key.
+///
+/// Returns the decrypted key as raw bytes. This function is used by both
+/// the normal stdout mode and the askpass watcher mode.
+pub async fn fetch_key(
+    config_path: Option<PathBuf>,
+    overrides: Option<CliOverrides>,
+) -> Result<Vec<u8>> {
+    let cfg = load_config(config_path)?;
+    let ovr = overrides.unwrap_or(CliOverrides {
+        server_uri: None,
+        api_key: None,
+        key_id: None,
+        cert_path: None,
+        max_retries: None,
+        retry_min_backoff_secs: None,
+        retry_max_backoff_secs: None,
+    });
 
-    // Check if the debug flag (-d) is passed as a command-line argument
-    if cli.debug {
-        let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Debug));
+    let server_uri = ovr
+        .server_uri
+        .or(cfg.server_uri)
+        .ok_or_else(|| anyhow!("server URI is required"))?;
+
+    if !server_uri.starts_with("http://") && !server_uri.starts_with("https://") {
+        return Err(anyhow!(
+            "server URI must start with http:// or https:// (got {:?})",
+            server_uri
+        ));
     }
 
-    let cfg = match load_config(cli.config) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("{:#}", e);
-            std::process::exit(1);
-        }
-    };
+    let api_key_path = ovr
+        .api_key
+        .or(cfg.api_key)
+        .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/api-key"));
 
-    // Retrieve the REST server URI, API key, key ID, and root certificate path from
-    // command line, falling back to environment variables if not given
-    let server_uri = cli.server_uri.unwrap_or_else(|| {
-        cfg.server_uri.unwrap_or_else(|| {
-            eprintln!("server URI is required");
-            std::process::exit(1)
-        })
-    });
+    let key_id = ovr
+        .key_id
+        .or(cfg.key_id)
+        .ok_or_else(|| anyhow!("server key ID is required"))?;
 
-    let api_key_path = cli.api_key.unwrap_or_else(|| {
-        cfg.api_key
-            .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/api_key".to_string()))
-    });
-    let key_id = cli.key_id.unwrap_or_else(|| {
-        cfg.key_id.unwrap_or_else(|| {
-            eprintln!("server key ID is required");
-            std::process::exit(1)
-        })
-    });
-
-    let cert_path = cli.cert_path.unwrap_or_else(|| {
-        cfg.cert_path
-            .unwrap_or(PathBuf::from("/etc/tas_agent/root_cert.pem".to_string()))
-    });
+    let cert_path = ovr
+        .cert_path
+        .or(cfg.cert_path)
+        .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/root_cert.pem"));
 
     let retry_config = RetryConfig {
-        max_retries: cli.max_retries.or(cfg.max_retries).unwrap_or(3),
-        min_backoff_secs: cli
+        max_retries: ovr.max_retries.or(cfg.max_retries).unwrap_or(3),
+        min_backoff_secs: ovr
             .retry_min_backoff_secs
             .or(cfg.retry_min_backoff_secs)
             .unwrap_or(1),
-        max_backoff_secs: cli
+        max_backoff_secs: ovr
             .retry_max_backoff_secs
             .or(cfg.retry_max_backoff_secs)
             .unwrap_or(30),
     };
     debug!("Retry config: {:?}", retry_config);
 
-    let api_key = match read_to_string(api_key_path.clone()) {
-        Ok(d) => d.trim().to_string(),
-        Err(e) => {
-            eprintln!("unable to read API key from {:?}: {}", api_key_path, e);
-            std::process::exit(1)
-        }
-    };
+    let api_key = read_to_string(api_key_path.clone())
+        .with_context(|| format!("unable to read API key from {:?}", api_key_path))?
+        .trim()
+        .to_string();
 
     // Generate a wrapping key for the HSM to wrap the secret key with
     debug!("Generating wrapping key...");
-    let rsa_wrapping_key = match generate_wrapping_key() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("failed to generate wrapping key: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let rsa_wrapping_key =
+        generate_wrapping_key().map_err(|e| anyhow!("failed to generate wrapping key: {}", e))?;
     debug!("\nGenerated wrapping key: {}\n", rsa_wrapping_key);
 
-    let wrapping_key = match rsa_wrapping_key.public_key_to_base64() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("failed to convert wrapping key to DER base64: {}", e);
-            std::process::exit(1)
-        }
-    };
-
+    let wrapping_key = rsa_wrapping_key
+        .public_key_to_base64()
+        .map_err(|e| anyhow!("failed to convert wrapping key to DER base64: {}", e))?;
     debug!("Base64-encoded public wrapping key: {}\n", wrapping_key);
 
     // Call the function to get the TAS server version
     match tas_get_version(&server_uri, &api_key, cert_path.clone(), &retry_config).await {
         Ok(version) => debug!("TEE Attestation Server Version: {}", version),
         Err(err) => {
-            eprintln!("TAS Version Error: {}", err);
-            std::process::exit(1);
+            return Err(anyhow!("TAS Version Error: {}", err));
         }
     }
 
     // Call the function to get the nonce from the TAS server
-    let nonce = match tas_get_nonce(&server_uri, &api_key, cert_path.clone(), &retry_config).await {
-        Ok(nonce) => {
-            debug!("Nonce: {}", nonce);
-            nonce
-        }
-        Err(err) => {
-            eprintln!("TAS Nonce Error: {}", err);
-            std::process::exit(1);
-        }
-    };
+    let nonce = tas_get_nonce(&server_uri, &api_key, cert_path.clone(), &retry_config)
+        .await
+        .map_err(|e| anyhow!("TAS Nonce Error: {}", e))?;
+    debug!("Nonce: {}", nonce);
 
-    // Key binding is always enabled — the RSA public key is bound into
-    // the TEE report_data via SHA-512(nonce || pubkey_der [|| gpu_hashes]).
+    // Key binding is always enabled
     let key_binding_enabled = true;
     let gpu_attestation_mode = resolve_gpu_attestation_mode(
         #[cfg(feature = "gpu-attestation")]
-        cli.gpu_attestation,
+        GpuAttestationMode::Auto,
         #[cfg(feature = "gpu-attestation")]
         cfg.gpu_attestation.as_deref(),
     );
@@ -313,8 +326,11 @@ async fn main() {
                             gpu_entries.push(entry);
                         }
                         Err(err) => {
-                            eprintln!("GPU {} evidence error: {}", provider.device_id(), err);
-                            std::process::exit(1);
+                            return Err(anyhow!(
+                                "GPU {} evidence error: {}",
+                                provider.device_id(),
+                                err
+                            ));
                         }
                     }
                 }
@@ -325,13 +341,13 @@ async fn main() {
                 for entry in &gpu_entries {
                     let raw_evidence = general_purpose::STANDARD
                         .decode(&entry.tee_evidence)
-                        .unwrap_or_else(|e| {
-                            eprintln!(
+                        .map_err(|e| {
+                            anyhow!(
                                 "Failed to decode GPU {} evidence: {}",
-                                entry.device_index, e
-                            );
-                            std::process::exit(1);
-                        });
+                                entry.device_index,
+                                e
+                            )
+                        })?;
                     let gpu_hash = hash_gpu_evidence(&raw_evidence);
                     debug!(
                         "GPU {} ({}): evidence hash = {}",
@@ -351,13 +367,9 @@ async fn main() {
 
     // --- Compute CPU report_data binding ---
     let report_data: Option<Vec<u8>> = if key_binding_enabled {
-        let pubkey_der = match rsa_wrapping_key.public_key_to_der() {
-            Ok(der) => der,
-            Err(e) => {
-                eprintln!("Failed to get public key DER: {}", e);
-                std::process::exit(1);
-            }
-        };
+        let pubkey_der = rsa_wrapping_key
+            .public_key_to_der()
+            .map_err(|e| anyhow!("Failed to get public key DER: {}", e))?;
 
         let nonce_trimmed = nonce.trim_matches('"');
         #[cfg(feature = "gpu-attestation")]
@@ -378,27 +390,20 @@ async fn main() {
         None
     };
 
-    // Generate the TEE evidence with  key binding
-    let (tee_evidence, tee_type) = match tee_get_evidence(&nonce, report_data.as_deref()) {
-        Ok((evidence, tee_type)) => {
-            debug!("Generated TEE Evidence (Base64-encoded): {}", evidence);
-            debug!("TEE Type: {}", tee_type);
-            (evidence, tee_type)
-        }
-        Err(err) => {
-            eprintln!("TEE evidence Error: {}", err);
-            std::process::exit(1);
-        }
-    };
+    // Generate the TEE evidence with key binding
+    let (tee_evidence, tee_type) = tee_get_evidence(&nonce, report_data.as_deref())
+        .map_err(|err| anyhow!("TEE evidence Error: {}", err))?;
+    debug!("Generated TEE Evidence (Base64-encoded): {}", tee_evidence);
+    debug!("TEE Type: {}", tee_type);
 
-    // Call the function to get the secret key using the nonce, tee_evidence, tee_type, and key_id
+    // Call the function to get the secret key
     #[cfg(feature = "gpu-attestation")]
     let gpu_evidence_ref = if gpu_entries.is_empty() {
         None
     } else {
         Some(serde_json::json!(gpu_entries))
     };
-    let secret_string = match tas_get_secret_key(
+    let secret_string = tas_get_secret_key(
         &server_uri,
         &api_key,
         &nonce,
@@ -415,60 +420,118 @@ async fn main() {
         None,
     )
     .await
-    {
-        Ok(secret_key) => {
-            debug!("Secret Key/Payload: {}", secret_key);
-            secret_key
-        }
-        Err(err) => {
-            eprintln!("TAS Secret Error: {}", err);
-            std::process::exit(1);
-        }
-    };
+    .map_err(|e| anyhow!("TAS Secret Error: {}", e))?;
+    debug!("Secret Key/Payload: {}", secret_string);
 
     // Deserialize the base64-encoded secret payload
-    let mut secret: SecretsPayload = match serde_json::from_str(&secret_string) {
-        Ok(secret) => {
-            debug!("Deserialized secret payload: {:?}", secret);
-            secret
-        }
-        Err(err) => {
-            eprintln!("JSON Deserialize Error: {}", err);
-            std::process::exit(1);
-        }
-    };
+    let mut secret: SecretsPayload =
+        serde_json::from_str(&secret_string).context("JSON Deserialize Error")?;
+    debug!("Deserialized secret payload: {:?}", secret);
 
     // Unwrap the secret key using the wrapping key
     debug!("Unwrapping secret key...");
-    let aes_key = match rsa_wrapping_key.unwrap_key(&secret.wrapped_key) {
-        Ok(aes_key) => aes_key,
-        Err(err) => {
-            eprintln!("Crypto Unwrap Error: {}", err);
-            std::process::exit(1);
-        }
-    };
+    let aes_key = rsa_wrapping_key
+        .unwrap_key(&secret.wrapped_key)
+        .map_err(|err| anyhow!("Crypto Unwrap Error: {}", err))?;
     debug!("Unwrapped secret key: {:?}", aes_key.hex_dump());
 
     // Decrypt the secret using the algorithm that was used to wrap it
     debug!("Decrypting secret using algorithm: {}", secret.algorithm);
     let decrypted_payload = if secret.algorithm == "AES-KWP" {
         debug!("Using AES Key Wrap to unwrap secret");
-        match unwrap_secret_with_aes_key_wrap(&aes_key, &secret.blob) {
-            Ok(payload) => payload,
-            Err(err) => {
-                eprintln!("AES Key Wrap Decrypt Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        unwrap_secret_with_aes_key_wrap(&aes_key, &secret.blob)
+            .map_err(|err| anyhow!("AES Key Wrap Decrypt Error: {}", err))?
     } else {
         debug!("Using AES-GCM to decrypt secret");
-        match decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag) {
-            Ok(payload) => payload,
-            Err(err) => {
-                eprintln!("Crypto Decrypt Error: {}", err);
+        decrypt_secret_with_aes_key(&aes_key, &secret.iv, &mut secret.blob, &secret.tag)
+            .map_err(|err| anyhow!("AES-GCM Decrypt Error: {}", err))?
+    };
+
+    // Zeroize sensitive material from memory
+    let mut aes_key_mut = aes_key;
+    aes_key_mut.zeroize();
+    secret.wrapped_key.zeroize();
+    secret.iv.zeroize();
+    secret.blob.zeroize();
+    secret.tag.zeroize();
+
+    Ok(decrypted_payload)
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    // Always initialise the logger; -d bumps the level from INFO to DEBUG
+    let level = if cli.debug {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(level));
+
+    // In askpass mode, dispatch to the askpass watcher and exit
+    #[cfg(feature = "askpass")]
+    {
+        let cfg = match load_config(cli.config.clone()) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("{:#}", e);
+                std::process::exit(1);
+            }
+        };
+        if cli.askpass || cfg.askpass.unwrap_or(false) {
+            if let Err(e) = askpass::run_askpass(cli.config).await {
+                eprintln!("askpass error: {:#}", e);
+            }
+            // Always exit 0 — never block the TTY recovery prompt
+            return;
+        }
+    }
+
+    // In passfifo mode, dispatch to the passfifo watcher and exit
+    #[cfg(feature = "passfifo")]
+    {
+        let cfg = match load_config(cli.config.clone()) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("{:#}", e);
+                std::process::exit(1);
+            }
+        };
+        if cli.passfifo || cfg.passfifo.unwrap_or(false) {
+            if let Err(e) = passfifo::run_passfifo(cli.config).await {
+                eprintln!("passfifo error: {:#}", e);
+            }
+            // Always exit 0 — never block the TTY recovery prompt
+            return;
+        }
+    }
+
+    // --- Normal (stdout) mode ---
+    let overrides = CliOverrides {
+        server_uri: cli.server_uri,
+        api_key: cli.api_key,
+        key_id: cli.key_id,
+        cert_path: cli.cert_path,
+        max_retries: cli.max_retries,
+        retry_min_backoff_secs: cli.retry_min_backoff_secs,
+        retry_max_backoff_secs: cli.retry_max_backoff_secs,
+    };
+
+    match fetch_key(cli.config, Some(overrides)).await {
+        Ok(decrypted_payload) => {
+            use std::io::Write;
+            if let Err(e) = std::io::stdout().write_all(&decrypted_payload) {
+                eprintln!("failed to write key to stdout: {:#}", e);
                 std::process::exit(1);
             }
         }
-    };
-    println!("{}", String::from_utf8_lossy(&decrypted_payload));
+        Err(e) => {
+            eprintln!("{:#}", e);
+            std::process::exit(1);
+        }
+    }
 }

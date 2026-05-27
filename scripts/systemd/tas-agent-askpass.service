@@ -1,0 +1,31 @@
+# Copyright 2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+[Unit]
+Description=TAS Agent LUKS Askpass Handler
+DefaultDependencies=no
+After=network-online.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/tas_agent --askpass
+Environment=RUST_LOG=info
+TimeoutStartSec=180
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=on-failure
+RestartSec=2
+RestartMaxDelaySec=30
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/tas_agent
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+

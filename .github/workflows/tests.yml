@@ -4,10 +4,42 @@ on:
   pull_request:
   push:
     branches: [main]
+
 env:
   CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: "-D warnings"
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Feature matrix: check + test each feature combination
+  # ---------------------------------------------------------------------------
+  feature-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "askpass"
+          - "passfifo"
+          - "askpass,passfifo"
+          - "gpu-attestation"
+          - "askpass,passfifo,gpu-attestation"
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Cargo check
+      run: cargo check ${{ matrix.features && format('--features {0}', matrix.features) }}
+
+    - name: Cargo test
+      run: cargo test ${{ matrix.features && format('--features {0}', matrix.features) }}
+
+  # ---------------------------------------------------------------------------
+  # Full build + docs (all features enabled)
+  # ---------------------------------------------------------------------------
   rust-checks:
     runs-on: ubuntu-latest
     steps:
@@ -16,27 +48,80 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
-    
-    - name: Build debug image 
+
+    - name: Build debug
       run: cargo build --all-features
 
-    - name: Build release image 
+    - name: Build release
       run: cargo build --release --all-features
 
-    - name: Run tests on debug image
+    - name: Run tests (debug)
       run: cargo test --all-features
 
-    - name: Run tests on release image
+    - name: Run tests (release)
       run: cargo test --release --all-features
-      
+
     - name: Build docs
       run: cargo doc --no-deps --all-features
 
     - name: Build via script
       run: |
-         touch ./config/root_cert.pem
-         touch ./config/api-key
-         ./build.sh
-    - name: Build docs
-      run: cargo doc --no-deps
-    
+        touch ./config/root_cert.pem
+        touch ./config/api-key
+        ./build.sh --tarball
+
+  # ---------------------------------------------------------------------------
+  # Debian packaging: build .deb packages
+  # ---------------------------------------------------------------------------
+  deb-package:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Install packaging deps
+      run: sudo apt-get update && sudo apt-get install -y dpkg-dev debhelper fakeroot pkg-config libssl-dev
+
+    - name: Build .deb packages
+      run: |
+        ln -s packaging/debian debian
+        dpkg-buildpackage -us -uc -b -d
+
+    - name: Verify .deb outputs
+      run: |
+        ls -la ../tas-agent_*.deb
+        ls -la ../tas-agent-initramfs_*.deb
+        ls -la ../tas-agent-dracut_*.deb
+
+  # ---------------------------------------------------------------------------
+  # RPM packaging: build .rpm packages
+  # ---------------------------------------------------------------------------
+  rpm-package:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Install packaging deps
+      run: sudo apt-get update && sudo apt-get install -y rpm pkg-config libssl-dev
+
+    - name: Build .rpm packages
+      run: |
+        VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+        mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+        tar czf "rpmbuild/SOURCES/tas-agent-${VERSION}.tar.gz" \
+          --transform "s,^,tas-agent-${VERSION}/," \
+          --exclude='.git' --exclude='target' --exclude='rpmbuild' \
+          .
+        rpmbuild -bb --nodeps packaging/rpm/tas-agent.spec \
+          --define "_topdir $(pwd)/rpmbuild" \
+          --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
+
+    - name: Verify .rpm outputs
+      run: |
+        find rpmbuild/RPMS -name '*.rpm' | tee /dev/stderr | grep -q 'tas-agent-0'
+        find rpmbuild/RPMS -name '*.rpm' | grep -q 'tas-agent-dracut'

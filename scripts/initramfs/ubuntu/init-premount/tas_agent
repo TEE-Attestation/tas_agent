@@ -1,5 +1,12 @@
 #!/bin/sh
 #
+# Copyright 2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+# DEPRECATED: This script is legacy. The systemd askpass watcher
+# (tas-agent-askpass.path / tas-agent-askpass.service) is the primary
+# mechanism for LUKS unlock. This script is kept for older Ubuntu
+# systems without systemd-in-initrd. See the plan for details.
+#
 # Copyright 2025 Hewlett Packard Enterprise Development LP.
 # SPDX-License-Identifier: MIT
 PREREQ="cloud-initramfs-dyn-netconf"
@@ -52,17 +59,15 @@ configure_networking
        count=$(($count + 1))
     done
     log_end_msg
-    if [ ! -e /etc/tas_kbm_ctl/config ]
+    if [ ! -e /etc/tas_agent/config.toml ]
     then
-       log_begin_msg "/etc/tas_kbm_ctl/config DOES NOT exist"
+       log_begin_msg "/etc/tas_agent/config.toml DOES NOT exist"
        log_end_msg
     fi
     if [ -e /sys/kernel/config/tsm/report ]
     then
        log_begin_msg "Loading config for TAS Agent"
-       set -a
-       . /etc/tas_agent/config
-       set +a
+       # Config is now TOML, parsed by tas_agent directly (not shell-sourceable)
        log_end_msg
        log_begin_msg "Running TAS Agent"
        # Capture the output of tas_agent to a variable, check return code for success

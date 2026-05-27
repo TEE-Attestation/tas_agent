@@ -1,0 +1,216 @@
+#!/bin/bash
+#
+# Copyright 2026 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+#
+# tas-luks-bind — Bind a LUKS volume to TAS for automated unlock.
+#
+# Analogous to `clevis luks bind`. Sets up the system so that
+# tas_agent can automatically unlock the specified LUKS device
+# at boot via the systemd ask-password protocol.
+#
+# Usage:
+#   tas-luks-bind -d /dev/sda1 [-c /etc/tas_agent/config.toml]
+#   tas-luks-bind -d /dev/sda1 -u       # unbind (remove TAS key slot)
+#   tas-luks-bind -l -d /dev/sda1       # list TAS bindings
+#
+
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Bind/unbind a LUKS volume for automatic TAS-based unlock at boot.
+
+Options:
+  -d DEVICE     LUKS block device (required, e.g. /dev/sda1)
+  -c CONFIG     Path to tas_agent config.toml (default: /etc/tas_agent/config.toml)
+  -u            Unbind: remove the TAS LUKS key slot
+  -l            List: show current TAS binding status for device
+  -p -          Read passphrase from stdin
+  -P FILE       Read passphrase from a file
+  -f            Force: skip confirmation prompts
+  -h            Show this help
+
+Examples:
+  sudo $(basename "$0") -d /dev/sda1                  # bind (random passphrase)
+  sudo $(basename "$0") -d /dev/sda1 -P /tmp/secret   # bind (passphrase from file)
+  echo -n 'mysecret' | sudo $(basename "$0") -d /dev/sda1 -p -  # from stdin
+  sudo $(basename "$0") -d /dev/sda1 -u               # unbind
+  sudo $(basename "$0") -l -d /dev/sda1               # list bindings
+EOF
+    exit "${1:-0}"
+}
+
+DEVICE=""
+CONFIG="/etc/tas_agent/config.toml"
+UNBIND=0
+LIST=0
+FORCE=0
+PASSPHRASE=""
+PASSPHRASE_FILE=""
+TAS_SLOT_LABEL="tas-agent"
+
+while getopts "d:c:p:P:ulfh" opt; do
+    case "$opt" in
+        d) DEVICE="$OPTARG" ;;
+        c) CONFIG="$OPTARG" ;;
+        p) PASSPHRASE="$OPTARG" ;;
+        P) PASSPHRASE_FILE="$OPTARG" ;;
+        u) UNBIND=1 ;;
+        l) LIST=1 ;;
+        f) FORCE=1 ;;
+        h) usage 0 ;;
+        *) usage 1 ;;
+    esac
+done
+
+if [ -z "$DEVICE" ]; then
+    echo "Error: -d DEVICE is required" >&2
+    usage 1
+fi
+
+if [ ! -b "$DEVICE" ]; then
+    echo "Error: $DEVICE is not a block device" >&2
+    exit 1
+fi
+
+# Verify it's a LUKS device
+if ! cryptsetup isLuks "$DEVICE" 2>/dev/null; then
+    echo "Error: $DEVICE is not a LUKS device" >&2
+    exit 1
+fi
+
+# Find slot labeled with TAS_SLOT_LABEL (LUKS2 token metadata)
+find_tas_slot() {
+    # Check LUKS2 tokens for our label
+    cryptsetup luksDump "$DEVICE" 2>/dev/null | \
+        awk '/Tokens:/,0' | grep -i "$TAS_SLOT_LABEL" && return 0
+    return 1
+}
+
+# --- List mode ---
+if [ "$LIST" -eq 1 ]; then
+    echo "LUKS device: $DEVICE"
+    echo "LUKS version: $(cryptsetup luksDump "$DEVICE" 2>/dev/null | head -1)"
+    if find_tas_slot >/dev/null 2>&1; then
+        echo "TAS binding: ACTIVE"
+        find_tas_slot
+    else
+        echo "TAS binding: NOT BOUND"
+    fi
+    # Show crypttab entry
+    uuid=$(cryptsetup luksUUID "$DEVICE")
+    if grep -q "$uuid" /etc/crypttab 2>/dev/null; then
+        echo "crypttab entry:"
+        grep "$uuid" /etc/crypttab
+    fi
+    exit 0
+fi
+
+# --- Unbind mode ---
+if [ "$UNBIND" -eq 1 ]; then
+    echo "Removing TAS key slot from $DEVICE"
+    # Find the slot number used by TAS
+    TAS_SLOT=$(cryptsetup luksDump "$DEVICE" 2>/dev/null | \
+        grep -B5 "$TAS_SLOT_LABEL" | grep "Keyslot:" | awk '{print $2}' || true)
+    if [ -z "$TAS_SLOT" ]; then
+        echo "No TAS binding found on $DEVICE"
+        exit 0
+    fi
+    if [ "$FORCE" -ne 1 ]; then
+        read -r -p "Remove TAS key slot $TAS_SLOT from $DEVICE? [y/N] " confirm
+        [ "$confirm" = "y" ] || [ "$confirm" = "Y" ] || exit 0
+    fi
+    cryptsetup luksKillSlot "$DEVICE" "$TAS_SLOT"
+    echo "TAS key slot removed from $DEVICE"
+    echo "Run 'update-initramfs -u' or 'dracut --force' to update initrd"
+    exit 0
+fi
+
+# --- Bind mode ---
+if [ ! -f "$CONFIG" ]; then
+    echo "Error: config file $CONFIG not found" >&2
+    echo "Create it first: cp /etc/tas_agent/config.toml.sample $CONFIG" >&2
+    exit 1
+fi
+
+echo "Binding $DEVICE to TAS for automated boot unlock"
+echo "Config: $CONFIG"
+
+if [ "$FORCE" -ne 1 ]; then
+    read -r -p "Continue? [y/N] " confirm
+    [ "$confirm" = "y" ] || [ "$confirm" = "Y" ] || exit 0
+fi
+
+# 1. Resolve passphrase: -P file > -p value/stdin > random
+if [ -n "$PASSPHRASE_FILE" ]; then
+    if [ ! -f "$PASSPHRASE_FILE" ]; then
+        echo "Error: passphrase file $PASSPHRASE_FILE not found" >&2
+        exit 1
+    fi
+    TAS_PASSPHRASE=$(cat "$PASSPHRASE_FILE")
+    echo "Read passphrase from $PASSPHRASE_FILE"
+elif [ -n "$PASSPHRASE" ]; then
+    if [ "$PASSPHRASE" != "-" ]; then
+        echo "Error: -p only accepts '-' (stdin). Use -P FILE to read from a file." >&2
+        exit 1
+    fi
+    if [ -t 0 ]; then
+        echo "Error: -p - requires input on stdin (e.g. echo secret | tas-luks-bind ...)" >&2
+        exit 1
+    fi
+    TAS_PASSPHRASE=$(cat)
+    echo "Read passphrase from stdin"
+else
+    TAS_PASSPHRASE=$(head -c 32 /dev/urandom | base64)
+    echo "Generated random passphrase"
+fi
+
+# 2. Add the passphrase as a new LUKS key slot
+echo "Adding TAS key slot to LUKS device..."
+echo "Enter an existing LUKS passphrase when prompted:"
+echo -n "$TAS_PASSPHRASE" | cryptsetup luksAddKey "$DEVICE" --key-slot 1 -
+
+# 3. Enable the systemd .path unit (triggers .service on ask-password requests)
+systemctl enable tas-agent-askpass.path 2>/dev/null || true
+
+# 4. Warn if api-key is world-readable
+if [ -f /etc/tas_agent/api-key ]; then
+    KEY_PERMS=$(stat -c '%a' /etc/tas_agent/api-key 2>/dev/null || true)
+    if [ -n "$KEY_PERMS" ] && [ "$KEY_PERMS" != "600" ]; then
+        echo ""
+        echo "WARNING: /etc/tas_agent/api-key has mode $KEY_PERMS (should be 0600)"
+        echo "  Fix with: chmod 0600 /etc/tas_agent/api-key"
+    fi
+fi
+
+# 5. Print post-bind hints (following Clevis pattern: bind only, user does the rest)
+UUID=$(cryptsetup luksUUID "$DEVICE")
+echo ""
+echo "=== TAS binding complete for $DEVICE ==="
+echo ""
+echo "A new key has been added to LUKS slot 1."
+echo "Upload this key to your TAS server using the key_id from $CONFIG."
+echo ""
+echo "Remaining steps:"
+echo ""
+echo "  1. Ensure /etc/crypttab includes _netdev and keyfile-timeout for $DEVICE:"
+echo "     tasroot UUID=$UUID none luks,discard,_netdev,keyfile-timeout=30s"
+echo ""
+echo "  2. Add network parameters to the kernel command line:"
+echo "     # Fedora/RHEL"
+echo "     grubby --update-kernel=ALL --args='rd.neednet=1 ip=dhcp'"
+echo "     # Ubuntu"
+echo "     Edit /etc/default/grub, add rd.neednet=1 ip=dhcp to GRUB_CMDLINE_LINUX, run update-grub"
+echo ""
+echo "  3. Rebuild the initramfs:"
+echo "     dracut --force          # Fedora/RHEL"
+echo "     update-initramfs -u     # Ubuntu"
+echo ""
+echo "  4. Verify TAS can retrieve the key:"
+echo "     tas_agent --debug"
+echo ""
+echo "  5. Reboot"
