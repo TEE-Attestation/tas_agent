@@ -119,9 +119,9 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     api_key: Option<PathBuf>,
 
-    /// ID of the key to request from the TAS REST service
+    /// Policy ID to request from the TAS REST service
     #[arg(long, value_name = "ID")]
-    key_id: Option<String>,
+    policy_id: Option<String>,
 
     /// Path to the CA root certificate signing the TAS REST service cert
     #[arg(long, value_name = "FILE")]
@@ -149,7 +149,8 @@ struct Cli {
 struct Config {
     server_uri: Option<String>,
     api_key: Option<PathBuf>,
-    key_id: Option<String>,
+    #[serde(alias = "key_id")]
+    policy_id: Option<String>,
     cert_path: Option<PathBuf>,
     max_retries: Option<u32>,
     retry_min_backoff_secs: Option<u64>,
@@ -195,7 +196,7 @@ async fn main() {
         }
     };
 
-    // Retrieve the REST server URI, API key, key ID, and root certificate path from
+    // Retrieve the REST server URI, API key, policy ID, and root certificate path from
     // command line, falling back to environment variables if not given
     let server_uri = cli.server_uri.unwrap_or_else(|| {
         cfg.server_uri.unwrap_or_else(|| {
@@ -208,9 +209,9 @@ async fn main() {
         cfg.api_key
             .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/api_key".to_string()))
     });
-    let key_id = cli.key_id.unwrap_or_else(|| {
-        cfg.key_id.unwrap_or_else(|| {
-            eprintln!("server key ID is required");
+    let policy_id = cli.policy_id.unwrap_or_else(|| {
+        cfg.policy_id.unwrap_or_else(|| {
+            eprintln!("server policy ID is required");
             std::process::exit(1)
         })
     });
@@ -391,7 +392,8 @@ async fn main() {
         }
     };
 
-    // Call the function to get the secret key using the nonce, tee_evidence, tee_type, and key_id
+    // Call the function to get the secret key using the nonce, tee_evidence,
+    // tee_type, and policy_id
     #[cfg(feature = "gpu-attestation")]
     let gpu_evidence_ref = if gpu_entries.is_empty() {
         None
@@ -404,7 +406,7 @@ async fn main() {
         &nonce,
         &tee_evidence,
         &tee_type,
-        &key_id,
+        &policy_id,
         &wrapping_key,
         cert_path.clone(),
         &retry_config,

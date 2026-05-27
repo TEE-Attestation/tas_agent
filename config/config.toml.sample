@@ -8,8 +8,8 @@ api_key = "/etc/tas_agent/api-key"
 # Path to the CA root certificate signing the TAS REST service cert
 cert_path = "/etc/tas_agent/root_cert.pem"
 
-# ID of the key to request from the TAS REST service
-key_id = "..."
+# Policy ID to request from the TAS REST service
+policy_id = "..."
 
 # Maximum number of retry attempts for HTTP requests (default: 3)
 # max_retries = 3

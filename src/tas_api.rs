@@ -153,7 +153,7 @@ pub async fn tas_get_secret_key(
     nonce: &str,
     tee_evidence: &str,
     tee_type: &str,
-    key_id: &str,
+    policy_id: &str,
     wrapping_key: &str,
     cert_path: PathBuf,
     retry_config: &RetryConfig,
@@ -168,7 +168,7 @@ pub async fn tas_get_secret_key(
         "tee-type": tee_type,
         "nonce": nonce,
         "tee-evidence": tee_evidence,
-        "key-id": key_id,
+        "policy-id": policy_id,
         "wrapping-key": wrapping_key
     });
 
@@ -345,7 +345,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
         let tee_type = "amd-sev-snp";
-        let key_id = "key123";
+        let policy_id = "policy123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
@@ -355,7 +355,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             nonce,
             tee_evidence,
             tee_type,
-            key_id,
+            policy_id,
             wrapping_key,
             cert_path,
             &no_retry_config(),
@@ -508,7 +508,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
         let tee_type = "amd-sev-snp";
-        let key_id = "key123";
+        let policy_id = "policy123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
@@ -518,7 +518,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             nonce,
             tee_evidence,
             tee_type,
-            key_id,
+            policy_id,
             wrapping_key,
             cert_path,
             &no_retry_config(),
@@ -552,7 +552,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let nonce = "abc123";
         let tee_evidence = "base64_encoded_report";
         let tee_type = "amd-sev-snp";
-        let key_id = "key123";
+        let policy_id = "policy123";
         let wrapping_key = "wrapping_key";
         let cert_file = create_test_cert();
         let cert_path = cert_file.path().to_path_buf();
@@ -562,7 +562,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             nonce,
             tee_evidence,
             tee_type,
-            key_id,
+            policy_id,
             wrapping_key,
             cert_path,
             &no_retry_config(),
@@ -725,7 +725,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "nonce",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_path,
             &no_retry_config(),
@@ -769,7 +769,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "nonce",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_path,
             &no_retry_config(),
@@ -802,7 +802,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "nonce",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_path,
             &no_retry_config(),
@@ -829,7 +829,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             .match_body(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::PartialJsonString(r#"{"tee-type":"amd-sev-snp"}"#.to_string()),
                 mockito::Matcher::PartialJsonString(r#"{"nonce":"abc123"}"#.to_string()),
-                mockito::Matcher::PartialJsonString(r#"{"key-id":"key1"}"#.to_string()),
+                mockito::Matcher::PartialJsonString(r#"{"policy-id":"policy1"}"#.to_string()),
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -844,7 +844,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "abc123",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_file.path().to_path_buf(),
             &no_retry_config(),
@@ -898,7 +898,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let mock = server
             .mock("POST", "/kb/v0/get_secret")
             .match_body(mockito::Matcher::JsonString(
-                r#"{"tee-type":"amd-sev-snp","nonce":"nonce","tee-evidence":"evidence","key-id":"key1","wrapping-key":"wrapping"}"#
+                r#"{"tee-type":"amd-sev-snp","nonce":"nonce","tee-evidence":"evidence","policy-id":"policy1","wrapping-key":"wrapping"}"#
                     .to_string(),
             ))
             .with_status(200)
@@ -914,7 +914,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "nonce",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_file.path().to_path_buf(),
             &no_retry_config(),
@@ -953,7 +953,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             "nonce",
             "evidence",
             "amd-sev-snp",
-            "key1",
+            "policy1",
             "wrapping",
             cert_file.path().to_path_buf(),
             &no_retry_config(),
