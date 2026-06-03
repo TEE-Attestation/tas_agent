@@ -13,7 +13,7 @@ The TAS Server is configured such that a CVM only receives the secrets, such as 
 3. It sends the report and the public key to the TAS server.
 4. The server checks the report. If valid, it encrypts the secrets with the public key and sends them back.
 
-TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Nvidia GPU attestation is coming soon.
+TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect CPU attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Nvidia GPU attestation is coming soon.
 
 
 
@@ -29,6 +29,28 @@ TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation
   submit it alongside a TEE attestation report to a compatible TAS server.
   After passing verification, the server issues an X.509 certificate that
   can be used for (m)TLS and to fetch secrets.
+
+## Quick Start
+
+```bash
+cargo build --release
+```
+
+The `tas_agent` application is configured via a configuration file (`config.toml`) and/or command-line arguments. Command-line arguments take precedence over the configuration file.
+
+Run the `tas_agent` program with a config file:
+
+```bash
+sudo ./target/debug/tas_agent -c config/config.toml
+```
+
+Example output:
+
+```
+Policy-ID: 771e76e7924348899ef751d0754c9060dd805928d03043f29a065275f4f883c8
+Value: "30786465616462656566"
+```
+
 
 ## Configuration
 
@@ -60,6 +82,8 @@ policy_id = "..."
 # retry_max_backoff_secs = 30
 ```
 
+If using TLS, ensure that `server_uri` specifies `https`.
+
 ### Command-Line Options
 
 | Option | Description |
@@ -82,19 +106,30 @@ policy_id = "..."
 
 ### Default (CPU-only attestation)
 
+The default build includes CPU TEE attestation (AMD SEV-SNP / Intel TDX) with
+public-key binding. This produces the smallest binary, suitable for
+resource-constrained environments such as pre-boot attestation from an initrd
+
 ```bash
 cargo build --release
 ```
 
 ### With Askpass Support (LUKS unlock via dracut/systemd)
 
+Adds a systemd ask-password watcher that polls `/run/systemd/ask-password`
+during early boot, fetches the LUKS passphrase from the TAS server, and
+replies via the systemd socket. Used with dracut-based initrd on Fedora
+and Ubuntu.
+
 ```bash
 cargo build --release --features askpass
 ```
-Policy-ID: 771e76e7924348899ef751d0754c9060dd805928d03043f29a065275f4f883c8
-Value: "30786465616462656566"
 
 ### With Passfifo Support (LUKS unlock via initramfs-tools)
+
+Adds an initramfs-tools passfifo watcher that detects the cryptsetup FIFO
+and writes the LUKS passphrase directly. Used with initramfs-tools-based
+initrd on Ubuntu.
 
 ```bash
 cargo build --release --features passfifo
@@ -111,7 +146,7 @@ cargo build --release --features gpu-attestation
 
 ### Package Build
 
-Package installation is the preferred deployment method. The `.deb` and
+Package installation is the preferred deployment method with `askpass` and `passfifo`. The `.deb` and
 `.rpm` packages include the expected initramfs and systemd integration
 artifacts and run the usual package-manager lifecycle hooks.
 
