@@ -32,9 +32,10 @@ chrono = "0.4.43"
 reqwest-middleware = "0.2"
 reqwest-retry = "0.3"
 retry-policies = "0.2"
+nv-attestation-sdk = { git = "https://github.com/NVIDIA/attestation-sdk", tag = "2026.04.29", optional = true }
 
 [features]
-gpu-attestation = []
+gpu-nvidia = ["dep:nv-attestation-sdk"]
 askpass = ["dep:rustix"]
 passfifo = []
 

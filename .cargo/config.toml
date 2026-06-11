@@ -1,0 +1,5 @@
+[env]
+NVAT_USE_SYSTEM_LIB = "1"
+
+[build]
+rustflags = ["-L", "/usr/local/lib"]
