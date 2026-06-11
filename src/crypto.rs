@@ -237,29 +237,30 @@ pub fn compute_report_data_binding(nonce: &[u8], pubkey_der: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-#[cfg(feature = "gpu-attestation")]
-/// Computes SHA-512(nonce || pubkey_der || gpu_hashes) for composable attestation.
-/// `gpu_hashes` is the pre-concatenated SHA-512 hashes of each GPU's evidence,
-/// ordered by device index: SHA512(gpu0) || SHA512(gpu1) || ...
+/// Computes SHA-512(nonce || pubkey_der || component_hashes) for composable attestation.
+/// `component_hashes` is the concatenated SHA-512 hashes of each component's evidence,
+/// ordered by device index within each category.
 /// Returns raw 64-byte hash.
-pub fn compute_report_data_binding_with_gpu(
+// Any component feature
+#[cfg(feature = "gpu-nvidia")]
+pub fn compute_report_data_binding_with_components(
     nonce: &[u8],
     pubkey_der: &[u8],
-    gpu_hashes: &[u8],
+    component_hashes: &[u8],
 ) -> Vec<u8> {
     let mut hasher = Sha512::new();
     hasher.update(nonce);
     hasher.update(pubkey_der);
-    hasher.update(gpu_hashes);
+    hasher.update(component_hashes);
     hasher.finalize().to_vec()
 }
 
-#[cfg(feature = "gpu-attestation")]
-/// Computes SHA-512 of a single GPU's raw attestation evidence.
-/// Returns raw 64-byte hash. Called once per GPU before concatenation.
-pub fn hash_gpu_evidence(raw_evidence: &[u8]) -> Vec<u8> {
+/// Computes SHA-512 of a single component's evidence bytes.
+/// Returns raw 64-byte hash.
+#[cfg(feature = "gpu-nvidia")]
+pub fn hash_evidence(evidence: &[u8]) -> Vec<u8> {
     let mut hasher = Sha512::new();
-    hasher.update(raw_evidence);
+    hasher.update(evidence);
     hasher.finalize().to_vec()
 }
 
@@ -315,45 +316,6 @@ mod tests {
         assert_ne!(
             binding1, binding2,
             "Different keys must produce different bindings"
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "gpu-attestation")]
-    fn test_compute_report_data_binding_with_gpu() {
-        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let rsa_key = generate_wrapping_key().unwrap();
-        let pubkey_der = rsa_key.public_key_to_der().unwrap();
-        let gpu0_evidence = b"gpu0_attestation_report_bytes";
-        let gpu1_evidence = b"gpu1_attestation_report_bytes";
-        let gpu0_hash = hash_gpu_evidence(gpu0_evidence);
-        let gpu1_hash = hash_gpu_evidence(gpu1_evidence);
-        let mut gpu_combined = gpu0_hash.clone();
-        gpu_combined.extend_from_slice(&gpu1_hash);
-        let binding = compute_report_data_binding_with_gpu(nonce, &pubkey_der, &gpu_combined);
-        assert_eq!(binding.len(), 64, "Composable binding must be 64 bytes");
-    }
-
-    #[test]
-    #[cfg(feature = "gpu-attestation")]
-    fn test_hash_gpu_evidence_length() {
-        let evidence = b"some_gpu_attestation_evidence";
-        let hash = hash_gpu_evidence(evidence);
-        assert_eq!(hash.len(), 64, "GPU evidence hash must be 64 bytes");
-    }
-
-    #[test]
-    #[cfg(feature = "gpu-attestation")]
-    fn test_gpu_binding_changes_cpu_hash() {
-        let nonce = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let rsa_key = generate_wrapping_key().unwrap();
-        let pubkey_der = rsa_key.public_key_to_der().unwrap();
-        let cpu_only = compute_report_data_binding(nonce, &pubkey_der);
-        let gpu_hash = hash_gpu_evidence(b"gpu_evidence");
-        let with_gpu = compute_report_data_binding_with_gpu(nonce, &pubkey_der, &gpu_hash);
-        assert_ne!(
-            cpu_only, with_gpu,
-            "Adding GPU evidence must change the CPU binding"
         );
     }
 

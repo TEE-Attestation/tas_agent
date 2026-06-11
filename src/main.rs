@@ -21,8 +21,9 @@ use std::path::PathBuf;
 #[cfg(feature = "askpass")]
 mod askpass;
 mod crypto;
-#[cfg(feature = "gpu-attestation")]
-mod gpu_evidence;
+// Any component feature
+#[cfg(feature = "gpu-nvidia")]
+mod components;
 #[cfg(feature = "passfifo")]
 mod passfifo;
 mod tas_api;
@@ -31,57 +32,14 @@ mod utils;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use serde::Deserialize;
-use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-#[allow(dead_code)]
-enum GpuAttestationMode {
-    Auto,
-    Disabled,
-}
-
-impl fmt::Display for GpuAttestationMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Auto => write!(f, "auto"),
-            Self::Disabled => write!(f, "disabled"),
-        }
-    }
-}
-
-/// Resolve GPU attestation mode from CLI and config values.
-/// CLI takes priority; config is the fallback; default is `Auto`.
-fn resolve_gpu_attestation_mode(
-    #[cfg(feature = "gpu-attestation")] cli_value: GpuAttestationMode,
-    #[cfg(feature = "gpu-attestation")] cfg_value: Option<&str>,
-) -> GpuAttestationMode {
-    #[cfg(not(feature = "gpu-attestation"))]
-    return GpuAttestationMode::Disabled;
-
-    #[cfg(feature = "gpu-attestation")]
-    {
-        // CLI explicitly set (not the default) — use it directly
-        if cli_value != GpuAttestationMode::Auto {
-            return cli_value;
-        }
-        // Fall back to config file value
-        match cfg_value {
-            Some("disabled") => GpuAttestationMode::Disabled,
-            _ => GpuAttestationMode::Auto,
-        }
-    }
-}
-
-#[cfg(feature = "gpu-attestation")]
-use base64::{engine::general_purpose, Engine};
 use crypto::{
     compute_report_data_binding, decrypt_secret_with_aes_key, generate_wrapping_key,
     unwrap_secret_with_aes_key_wrap,
 };
-#[cfg(feature = "gpu-attestation")]
-use crypto::{compute_report_data_binding_with_gpu, hash_gpu_evidence};
-#[cfg(feature = "gpu-attestation")]
-use gpu_evidence::detect_gpu_providers;
+// Any component feature
+#[cfg(feature = "gpu-nvidia")]
+use crypto::compute_report_data_binding_with_components;
 use tas_api::{tas_get_nonce, tas_get_secret_key, tas_get_version, RetryConfig};
 use tee_evidence::tee_get_evidence;
 use utils::SecretsPayload;
@@ -143,10 +101,11 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     retry_max_backoff_secs: Option<u64>,
 
-    /// GPU attestation mode: auto (default) or disabled
-    #[cfg(feature = "gpu-attestation")]
-    #[arg(long, value_enum, default_value_t = GpuAttestationMode::Auto)]
-    gpu_attestation: GpuAttestationMode,
+    /// Disable GPU attestation (enabled by default when built with GPU support)
+    // Any GPU feature
+    #[cfg(feature = "gpu-nvidia")]
+    #[arg(long)]
+    no_gpu: bool,
 
     /// Enable systemd ask-password watcher mode for automatic LUKS unlock
     #[cfg(feature = "askpass")]
@@ -168,9 +127,10 @@ struct Config {
     max_retries: Option<u32>,
     retry_min_backoff_secs: Option<u64>,
     retry_max_backoff_secs: Option<u64>,
-    /// GPU attestation mode: "auto", "disabled" (default: "auto")
-    #[cfg(feature = "gpu-attestation")]
-    gpu_attestation: Option<String>,
+    /// Set to true to disable GPU attestation
+    // Any GPU feature
+    #[cfg(feature = "gpu-nvidia")]
+    no_gpu: Option<bool>,
     /// Enable systemd ask-password watcher mode
     #[cfg(feature = "askpass")]
     askpass: Option<bool>,
@@ -206,6 +166,8 @@ pub struct CliOverrides {
     pub max_retries: Option<u32>,
     pub retry_min_backoff_secs: Option<u64>,
     pub retry_max_backoff_secs: Option<u64>,
+    #[cfg(feature = "gpu-nvidia")]
+    pub no_gpu: bool,
 }
 
 /// Core key-fetch logic: loads config, contacts TAS, retrieves and decrypts key.
@@ -225,6 +187,8 @@ pub async fn fetch_key(
         max_retries: None,
         retry_min_backoff_secs: None,
         retry_max_backoff_secs: None,
+        #[cfg(feature = "gpu-nvidia")]
+        no_gpu: false,
     });
 
     let server_uri = ovr
@@ -299,71 +263,35 @@ pub async fn fetch_key(
 
     // Key binding is always enabled
     let key_binding_enabled = true;
-    let gpu_attestation_mode = resolve_gpu_attestation_mode(
-        #[cfg(feature = "gpu-attestation")]
-        GpuAttestationMode::Auto,
-        #[cfg(feature = "gpu-attestation")]
-        cfg.gpu_attestation.as_deref(),
-    );
 
-    debug!(
-        "Key binding: {}, GPU attestation: {}",
-        key_binding_enabled, gpu_attestation_mode
-    );
+    // --- GPU attestation evidence collection ---
+    // Any GPU feature
+    #[cfg(feature = "gpu-nvidia")]
+    let gpu_enabled = !ovr.no_gpu && !cfg.no_gpu.unwrap_or(false);
+    #[cfg(not(feature = "gpu-nvidia"))]
+    let gpu_enabled = false;
 
-    // --- GPU evidence collection (Phase 2: composable attestation) ---
-    #[cfg(feature = "gpu-attestation")]
-    let (gpu_entries, gpu_hashes_combined) = {
-        let mut gpu_entries = Vec::new();
-        let mut gpu_hashes_combined: Vec<u8> = Vec::new();
-        if gpu_attestation_mode != GpuAttestationMode::Disabled {
-            let providers = detect_gpu_providers();
-            if !providers.is_empty() {
-                debug!("Found {} GPU TEE provider(s)", providers.len());
-                for provider in &providers {
-                    match provider.get_evidence(&nonce) {
-                        Ok(entry) => {
-                            gpu_entries.push(entry);
-                        }
-                        Err(err) => {
-                            return Err(anyhow!(
-                                "GPU {} evidence error: {}",
-                                provider.device_id(),
-                                err
-                            ));
-                        }
-                    }
-                }
-                // Ensure entries are in deterministic device_index order
-                gpu_entries.sort_by_key(|e| e.device_index);
-
-                // Build hash chain from sorted entries
-                for entry in &gpu_entries {
-                    let raw_evidence = general_purpose::STANDARD
-                        .decode(&entry.tee_evidence)
-                        .map_err(|e| {
-                            anyhow!(
-                                "Failed to decode GPU {} evidence: {}",
-                                entry.device_index,
-                                e
-                            )
-                        })?;
-                    let gpu_hash = hash_gpu_evidence(&raw_evidence);
-                    debug!(
-                        "GPU {} ({}): evidence hash = {}",
-                        entry.device_index,
-                        entry.tee_type,
-                        hex::encode(&gpu_hash)
-                    );
-                    gpu_hashes_combined.extend_from_slice(&gpu_hash);
+    let (component_evidence, _component_hashes) = if gpu_enabled {
+        #[cfg(feature = "gpu-nvidia")]
+        {
+            let nonce_trimmed = nonce.trim_matches('"');
+            match components::gpu_nvidia::collect_and_hash_gpu_evidence(nonce_trimmed) {
+                Ok((evidence_json, hashes)) => (Some(evidence_json), hashes),
+                Err(e) => {
+                    eprintln!("GPU attestation error: {}", e);
+                    std::process::exit(1);
                 }
             }
         }
-        (gpu_entries, gpu_hashes_combined)
+        #[cfg(not(feature = "gpu-nvidia"))]
+        {
+            debug!("No GPU attestation providers compiled in");
+            (None, Vec::<u8>::new())
+        }
+    } else {
+        debug!("GPU attestation not enabled");
+        (None, Vec::<u8>::new())
     };
-    #[cfg(not(feature = "gpu-attestation"))]
-    let gpu_hashes_combined: Vec<u8> = Vec::new();
-    let _ = &gpu_hashes_combined;
 
     // --- Compute CPU report_data binding ---
     let report_data: Option<Vec<u8>> = if key_binding_enabled {
@@ -372,17 +300,18 @@ pub async fn fetch_key(
             .map_err(|e| anyhow!("Failed to get public key DER: {}", e))?;
 
         let nonce_trimmed = nonce.trim_matches('"');
-        #[cfg(feature = "gpu-attestation")]
-        let binding = if gpu_hashes_combined.is_empty() {
+        // Any component feature
+        #[cfg(feature = "gpu-nvidia")]
+        let binding = if _component_hashes.is_empty() {
             compute_report_data_binding(nonce_trimmed.as_bytes(), &pubkey_der)
         } else {
-            compute_report_data_binding_with_gpu(
+            compute_report_data_binding_with_components(
                 nonce_trimmed.as_bytes(),
                 &pubkey_der,
-                &gpu_hashes_combined,
+                &_component_hashes,
             )
         };
-        #[cfg(not(feature = "gpu-attestation"))]
+        #[cfg(not(feature = "gpu-nvidia"))]
         let binding = compute_report_data_binding(nonce_trimmed.as_bytes(), &pubkey_der);
         debug!("Report data binding (hex): {}", hex::encode(&binding));
         Some(binding)
@@ -397,12 +326,6 @@ pub async fn fetch_key(
     debug!("TEE Type: {}", tee_type);
 
     // Call the function to get the secret key
-    #[cfg(feature = "gpu-attestation")]
-    let gpu_evidence_ref = if gpu_entries.is_empty() {
-        None
-    } else {
-        Some(serde_json::json!(gpu_entries))
-    };
     let secret_string = tas_get_secret_key(
         &server_uri,
         &api_key,
@@ -414,10 +337,7 @@ pub async fn fetch_key(
         cert_path.clone(),
         &retry_config,
         key_binding_enabled,
-        #[cfg(feature = "gpu-attestation")]
-        gpu_evidence_ref.as_ref(),
-        #[cfg(not(feature = "gpu-attestation"))]
-        None,
+        component_evidence.as_ref(),
     )
     .await
     .map_err(|e| anyhow!("TAS Secret Error: {}", e))?;
@@ -519,6 +439,8 @@ async fn main() {
         max_retries: cli.max_retries,
         retry_min_backoff_secs: cli.retry_min_backoff_secs,
         retry_max_backoff_secs: cli.retry_max_backoff_secs,
+        #[cfg(feature = "gpu-nvidia")]
+        no_gpu: cli.no_gpu,
     };
 
     match fetch_key(cli.config, Some(overrides)).await {

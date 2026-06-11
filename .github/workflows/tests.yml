@@ -23,8 +23,8 @@ jobs:
           - "askpass"
           - "passfifo"
           - "askpass,passfifo"
-          - "gpu-attestation"
-          - "askpass,passfifo,gpu-attestation"
+          - "gpu-nvidia"
+          - "askpass,passfifo,gpu-nvidia"
     steps:
     - uses: actions/checkout@v3
     - uses: actions-rust-lang/setup-rust-toolchain@v1

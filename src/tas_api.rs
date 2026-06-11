@@ -169,7 +169,7 @@ pub async fn tas_get_secret_key(
     cert_path: PathBuf,
     retry_config: &RetryConfig,
     report_data_binding: bool,
-    gpu_evidence: Option<&serde_json::Value>,
+    component_evidence: Option<&serde_json::Value>,
 ) -> Result<String, String> {
     let secret_url = format!("{}/kb/v0/get_secret", server_uri);
     let client = create_client(server_uri, cert_path, retry_config)?;
@@ -188,9 +188,9 @@ pub async fn tas_get_secret_key(
         body["report-data-binding"] = serde_json::json!(true);
     }
 
-    // Include GPU evidence when available
-    if let Some(gpu_entries) = gpu_evidence {
-        body["gpu-evidence"] = gpu_entries.clone();
+    // Include component evidence (GPUs, NICs, etc.) when available
+    if let Some(components) = component_evidence {
+        body["component-evidence"] = components.clone();
     }
 
     match client
@@ -750,20 +750,22 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
     }
 
     #[tokio::test]
-    async fn test_tas_get_secret_key_with_gpu_evidence() {
-        let gpu_evidence = serde_json::json!([
-            {
-                "tee-type": "nvidia-gpu",
-                "device-index": 0,
-                "tee-evidence": "gpu_report_base64"
-            }
-        ]);
+    async fn test_tas_get_secret_key_with_component_evidence() {
+        let component_evidence = serde_json::json!({
+            "gpu": [
+                {
+                    "type": "gpu-nvidia",
+                    "device-index": 0,
+                    "evidence": "gpu_report_base64"
+                }
+            ]
+        });
 
         let mut server = Server::new_async().await;
         let mock = server
             .mock("POST", "/kb/v0/get_secret")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"gpu-evidence":[{"tee-type":"nvidia-gpu","device-index":0,"tee-evidence":"gpu_report_base64"}]}"#.to_string(),
+                r#"{"component-evidence":{"gpu":[{"type":"gpu-nvidia","device-index":0,"evidence":"gpu_report_base64"}]}}"#.to_string(),
             ))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -785,7 +787,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             cert_path,
             &no_retry_config(),
             true,
-            Some(&gpu_evidence),
+            Some(&component_evidence),
         )
         .await;
 
@@ -939,17 +941,20 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
     }
 
     #[tokio::test]
-    async fn test_json_get_secret_request_includes_gpu_evidence_when_provided() {
-        let gpu_entries = serde_json::json!([
-            {"device_index": 0, "evidence": "gpu0_report"},
-            {"device_index": 1, "evidence": "gpu1_report"}
-        ]);
+    async fn test_json_get_secret_request_includes_component_evidence_when_provided() {
+        let component_evidence = serde_json::json!({
+            "gpu": [
+                {"type": "gpu-nvidia", "device-index": 0, "evidence": "gpu0_report"},
+                {"type": "gpu-nvidia", "device-index": 1, "evidence": "gpu1_report"}
+            ]
+        });
 
         let mut server = Server::new_async().await;
         let mock = server
             .mock("POST", "/kb/v0/get_secret")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"gpu-evidence":[{"device_index":0},{"device_index":1}]}"#.to_string(),
+                r#"{"component-evidence":{"gpu":[{"device-index":0},{"device-index":1}]}}"#
+                    .to_string(),
             ))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -969,7 +974,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             cert_file.path().to_path_buf(),
             &no_retry_config(),
             false,
-            Some(&gpu_entries),
+            Some(&component_evidence),
         )
         .await;
 
