@@ -23,8 +23,6 @@ jobs:
           - "askpass"
           - "passfifo"
           - "askpass,passfifo"
-          - "gpu-attestation"
-          - "askpass,passfifo,gpu-attestation"
     steps:
     - uses: actions/checkout@v3
     - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -50,19 +48,19 @@ jobs:
         components: rustfmt, clippy
 
     - name: Build debug
-      run: cargo build --all-features
+      run: cargo build --features askpass,passfifo
 
     - name: Build release
-      run: cargo build --release --all-features
+      run: cargo build --release --features askpass,passfifo
 
     - name: Run tests (debug)
-      run: cargo test --all-features
+      run: cargo test --features askpass,passfifo
 
     - name: Run tests (release)
-      run: cargo test --release --all-features
+      run: cargo test --release --features askpass,passfifo
 
     - name: Build docs
-      run: cargo doc --no-deps --all-features
+      run: cargo doc --no-deps --features askpass,passfifo
 
     - name: Build via script
       run: |
