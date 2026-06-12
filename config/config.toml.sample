@@ -26,6 +26,10 @@ policy_id = "..."
 # Maximum backoff time in seconds between retries (default: 30)
 # retry_max_backoff_secs = 30
 
+# Enable certificate CSR generation mode
+# (requires the 'certify' feature to be enabled at build time)
+# certify = false
+
 # Enable systemd ask-password watcher mode for automatic LUKS unlock
 # (requires the 'askpass' feature to be enabled at build time)
 # askpass = false
