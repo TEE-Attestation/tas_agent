@@ -123,3 +123,69 @@ jobs:
       run: |
         find rpmbuild/RPMS -name '*.rpm' | tee /dev/stderr | grep -q 'tas-agent-0'
         find rpmbuild/RPMS -name '*.rpm' | grep -q 'tas-agent-dracut'
+
+  # ---------------------------------------------------------------------------
+  # GPU feature: build the external NVIDIA Attestation SDK (libnvat) from source,
+  # then check + test the `gpu-nvidia` feature against it.
+  #
+  # NOTE: GitHub-hosted runners have no NVIDIA GPU/driver, so this job only
+  # compiles the feature and runs the hardware-independent tests. NVML is loaded
+  # dynamically at runtime, so no GPU is needed to build or link. Tests that
+  # actually collect evidence (GpuEvidenceSource::from_nvml) require a physical
+  # GPU.
+  # ---------------------------------------------------------------------------
+  gpu-feature:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    # System packages needed to build the C++ SDK and generate Rust bindings.
+    # The SDK statically builds OpenSSL/curl/xmlsec itself, so we only need the
+    # toolchain, libclang (bindgen), and libxml2/zlib (found via find_package).
+    - name: Install SDK build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake pkg-config git perl \
+          clang libclang-dev \
+          libxml2-dev zlib1g-dev
+
+    # Build libnvat from the exact git tag referenced in Cargo.toml so the ABI
+    # matches the crate the `gpu-nvidia` feature pulls in, then install it to
+    # /usr so the sys-crate's NVAT_USE_SYSTEM_LIB mode finds /usr/include/nvat.h
+    # and /usr/lib/libnvat.so.
+    - name: Build and install libnvat (NVIDIA Attestation SDK)
+      # Allow warnings for the SDK build only, due to warnings from SDK dependencies
+      env:
+        RUSTFLAGS: "-A warnings"
+      run: |
+        set -euo pipefail
+        SDK_TAG=$(grep 'nv-attestation-sdk' Cargo.toml | grep -oP 'tag\s*=\s*"\K[^"]+')
+        echo "Building NVIDIA Attestation SDK tag: ${SDK_TAG}"
+        git clone --depth 1 --branch "${SDK_TAG}" \
+          https://github.com/NVIDIA/attestation-sdk.git /tmp/attestation-sdk
+        cmake -S /tmp/attestation-sdk/nv-attestation-sdk-cpp -B /tmp/attestation-sdk/build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=ON \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DCMAKE_INSTALL_LIBDIR=lib \
+          -DCMAKE_BUILD_PARALLEL_LEVEL="$(nproc)"
+        if ! cmake --build /tmp/attestation-sdk/build -j"$(nproc)"; then
+          echo "::warning::Parallel SDK build failed; retrying serially to surface the real error"
+          cmake --build /tmp/attestation-sdk/build -j1 --verbose
+        fi
+        sudo cmake --install /tmp/attestation-sdk/build
+        sudo ldconfig
+
+    - name: Cargo check (gpu-nvidia)
+      env:
+        NVAT_USE_SYSTEM_LIB: "1"
+      run: cargo check --features gpu-nvidia,askpass,passfifo
+
+    - name: Cargo test (gpu-nvidia)
+      env:
+        NVAT_USE_SYSTEM_LIB: "1"
+      run: cargo test --features gpu-nvidia,askpass,passfifo
