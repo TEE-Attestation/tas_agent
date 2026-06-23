@@ -13,7 +13,7 @@ The TAS Server is configured such that a CVM only receives the secrets, such as 
 3. It sends the report and the public key to the TAS server.
 4. The server checks the report. If valid, it encrypts the secrets with the public key and sends them back.
 
-TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect CPU attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Nvidia GPU attestation is coming soon.
+TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect CPU attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Optional NVIDIA GPU attestation can be enabled at build time with the `gpu-nvidia` feature (see [With GPU Attestation Support](#with-gpu-attestation-support)).
 
 
 
@@ -80,6 +80,10 @@ policy_id = "..."
 
 # Maximum backoff time in seconds between retries (default: 30)
 # retry_max_backoff_secs = 30
+
+# Disable NVIDIA GPU attestation (default: false). Only applies to a
+# 'gpu-nvidia' build, where GPU attestation is enabled by default.
+# no_gpu = false
 ```
 
 If using TLS, ensure that `server_uri` specifies `https`.
@@ -98,7 +102,7 @@ If using TLS, ensure that `server_uri` specifies `https`.
 | `--retry-min-backoff-secs <SECS>` | Minimum backoff time in seconds between retries (default: 1) |
 | `--retry-max-backoff-secs <SECS>` | Maximum backoff time in seconds between retries (default: 30) |
 | `--no-key-binding` | Disable public-key binding in TEE report data (for legacy TAS servers) |
-| `--gpu-attestation <MODE>` | GPU attestation mode: `auto` (default) or `disabled` (requires `gpu-attestation` feature) |
+| `--no-gpu` | Disable NVIDIA GPU attestation (enabled by default in a `gpu-nvidia` build; requires the `gpu-nvidia` feature) |
 | `--askpass` | systemd ask-password watcher mode (requires `askpass` feature) |
 | `--passfifo` | initramfs-tools passfifo watcher mode (requires `passfifo` feature) |
 
@@ -137,12 +141,55 @@ cargo build --release --features passfifo
 
 ### With GPU Attestation Support
 
+Adds NVIDIA GPU attestation via the
+[NVIDIA Attestation SDK](https://github.com/NVIDIA/attestation-sdk). The agent
+collects per-GPU evidence, sends it to the TAS server as `component-evidence`
+alongside the CPU TEE report, and binds the GPU evidence into the CPU report
+data so the CPU and GPU attestations are cryptographically linked.
+
+GPU attestation is **enabled by default** in a `gpu-nvidia` build and is
+**fail-closed**: if evidence cannot be collected the agent exits with an error
+instead of falling back to a CPU-only request. Disable it at runtime with the
+`--no-gpu` flag or `no_gpu = true` in `config.toml`.
+
+This feature links the NVIDIA Attestation SDK C library, `libnvat`, which must
+be available both at build time and at run time.
+
+**1. Install `libnvat`.** Either install NVIDIA's `nvattest` package, or build
+it from source (pinned to the tag referenced in `Cargo.toml`) and install it to
+`/usr`:
+
 ```bash
-cargo build --release --features gpu-attestation
+# Build dependencies (Debian/Ubuntu):
+sudo apt-get install -y build-essential cmake pkg-config git perl \
+  clang libclang-dev libxml2-dev zlib1g-dev
+
+SDK_TAG=$(grep 'nv-attestation-sdk' Cargo.toml | grep -oP 'tag\s*=\s*"\K[^"]+')
+git clone --depth 1 --branch "$SDK_TAG" https://github.com/NVIDIA/attestation-sdk.git
+cmake -S attestation-sdk/nv-attestation-sdk-cpp -B /tmp/nvat-build \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib
+cmake --build /tmp/nvat-build -j"$(nproc)"
+sudo cmake --install /tmp/nvat-build && sudo ldconfig
 ```
 
-> **Note:** GPU attestation is currently a stub. The `GpuEvidenceProvider`
-> trait is in place, but no concrete GPU provider is functional yet.
+**2. Build the agent** with the `gpu-nvidia` feature, telling the SDK bindings
+to link the system `libnvat`:
+
+```bash
+NVAT_USE_SYSTEM_LIB=1 cargo build --release --features gpu-nvidia
+```
+
+`NVAT_USE_SYSTEM_LIB=1` makes the SDK's `-sys` crate link the system-installed
+`libnvat` (`/usr/include/nvat.h`, `-lnvat`) and generate bindings from it;
+`clang`/`libclang` is required for that binding generation. Without the
+variable, the crate instead expects a local C++ SDK build tree.
+
+> **Runtime requirements:** an NVIDIA GPU with the driver installed (NVML), and
+> `libnvat.so` reachable by the loader (e.g. installed under `/usr/lib`). For
+> confidential-computing attestation the GPU must be in CC mode. The `.deb`,
+> `.rpm`, and tarball build scripts do not yet enable `gpu-nvidia`, so a
+> GPU-enabled agent is currently produced with `cargo` directly.
 
 ### Package Build
 
