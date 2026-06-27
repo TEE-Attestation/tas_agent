@@ -22,6 +22,8 @@ use std::path::PathBuf;
 mod askpass;
 mod crypto;
 // Any component feature
+#[cfg(feature = "certify")]
+mod certify;
 #[cfg(feature = "gpu-nvidia")]
 mod components;
 #[cfg(feature = "passfifo")]
@@ -68,6 +70,10 @@ struct Cli {
     /// Display debugging messages
     #[arg(short, long)]
     debug: bool,
+
+    #[cfg(feature = "certify")]
+    #[command(flatten)]
+    certify_args: certify::CertifyArgs,
 
     /// Path to the config file (default: '/etc/tas_agent/config.toml')
     #[arg(short, long, value_name = "FILE")]
@@ -131,6 +137,9 @@ struct Config {
     // Any GPU feature
     #[cfg(feature = "gpu-nvidia")]
     no_gpu: Option<bool>,
+    #[cfg(feature = "certify")]
+    #[serde(flatten)]
+    certify_config: certify::CertifyConfig,
     /// Enable systemd ask-password watcher mode
     #[cfg(feature = "askpass")]
     askpass: Option<bool>,
@@ -430,7 +439,24 @@ async fn main() {
         }
     }
 
-    // --- Normal (stdout) mode ---
+    #[cfg(feature = "certify")]
+    {
+        let cfg = match load_config(cli.config.clone()) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("{:#}", e);
+                std::process::exit(1);
+            }
+        };
+        match certify::run_if_requested(&cli, &cfg).await {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("{:#}", e);
+                std::process::exit(1);
+            }
+        }
+    }
     let overrides = CliOverrides {
         server_uri: cli.server_uri,
         api_key: cli.api_key,

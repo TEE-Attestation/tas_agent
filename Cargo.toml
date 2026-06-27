@@ -11,7 +11,10 @@ tempfile = "3.6"
 base64 = "0.21"
 hex = "0.4"
 rsa = { version = "0.9.8", features = ["sha2"] }
-sha2 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
+x509-cert = { version = "0.2", features = ["builder", "pem"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+hostname = { version = "0.4", optional = true }
 # Only needed for askpass, which must read CLOCK_MONOTONIC directly.
 rustix = { version = "1.0.7", features = ["time"], optional = true }
 # 0.8 required by rsa
@@ -38,6 +41,7 @@ nv-attestation-sdk = { git = "https://github.com/NVIDIA/attestation-sdk", tag = 
 gpu-nvidia = ["dep:nv-attestation-sdk"]
 askpass = ["dep:rustix"]
 passfifo = []
+certify = ["dep:x509-cert", "dep:uuid", "dep:hostname"]
 
 [dev-dependencies]
 mockito = "1.7"

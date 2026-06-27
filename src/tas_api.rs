@@ -44,7 +44,7 @@ impl Default for RetryConfig {
 /// When `server_uri` uses `https://`, the cert bundle at `cert_path` is loaded and added
 /// as trusted root certificates. For plain `http://` URIs the cert file is skipped,
 /// which avoids failures in initrd environments that lack a CA bundle.
-fn create_client(
+pub(crate) fn create_client(
     server_uri: &str,
     cert_path: PathBuf,
     retry_config: &RetryConfig,
