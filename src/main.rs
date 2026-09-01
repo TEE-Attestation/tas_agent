@@ -87,6 +87,11 @@ struct Cli {
     #[arg(long, value_name = "ID", global = true)]
     policy_id: Option<String>,
 
+    /// Domain policy to request from the TAS REST service (certify flow)
+    #[cfg(feature = "certify")]
+    #[arg(long = "domain-policy", value_name = "DOMAIN", global = true)]
+    domain_policy: Option<String>,
+
     /// Path to the CA root certificate signing the TAS REST service cert
     #[arg(long, value_name = "FILE", global = true)]
     cert_path: Option<PathBuf>,

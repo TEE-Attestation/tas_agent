@@ -32,8 +32,11 @@ struct CertifyRequest<'a> {
     #[serde(rename = "tee-evidence")]
     tee_evidence: &'a str,
     csr: String,
-    #[serde(rename = "policy-domain")]
-    policy_domain: &'a str,
+    #[serde(rename = "domain-policy")]
+    domain_policy: &'a str,
+    // Optional attestation policy id
+    #[serde(skip_serializing_if = "Option::is_none", rename = "policy-id")]
+    policy_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "renew_cert")]
     renew_cert: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "gpu-evidence")]
@@ -89,7 +92,8 @@ pub async fn tas_certify(
     tee_type: &str,
     renew_cert: Option<&str>,
     csr_pem: &str,
-    policy_domain: &str,
+    domain_policy: &str,
+    policy_id: Option<&str>,
     cert_path: PathBuf,
     retry_config: &RetryConfig,
     gpu_evidence: Option<&[serde_json::Value]>,
@@ -110,7 +114,8 @@ pub async fn tas_certify(
         renew_cert,
         tee_evidence,
         csr: csr_der_b64,
-        policy_domain,
+        domain_policy,
+        policy_id,
         gpu_evidence,
     };
 
@@ -270,7 +275,7 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
             .unwrap();
         let expected_csr_b64 = general_purpose::STANDARD.encode(csr_der);
         let expected_body = format!(
-            r#"{{"tee-type":"amd-sev-snp","nonce":"nonce123","tee-evidence":"dGVzdC1ldmlkZW5jZQ==","csr":"{}","policy-domain":"tenant-a"}}"#,
+            r#"{{"tee-type":"amd-sev-snp","nonce":"nonce123","tee-evidence":"dGVzdC1ldmlkZW5jZQ==","csr":"{}","domain-policy":"tenant-a"}}"#,
             expected_csr_b64
         );
 
@@ -296,6 +301,7 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
             None,
             sample_csr_pem(),
             "tenant-a",
+            None,
             cert_file.path().to_path_buf(),
             &no_retry_config(),
             None,
@@ -305,6 +311,55 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
 
         assert!(result.certificate.contains("BEGIN CERTIFICATE"));
         assert_eq!(result.ca_chain.len(), 1);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_tas_certify_sends_policy_id_when_provided() {
+        let csr_der = CertReq::from_pem(sample_csr_pem())
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let expected_csr_b64 = general_purpose::STANDARD.encode(csr_der);
+        let expected_body = serde_json::json!({
+            "tee-type": "amd-sev-snp",
+            "nonce": "nonce123",
+            "tee-evidence": "dGVzdC1ldmlkZW5jZQ==",
+            "csr": expected_csr_b64,
+            "domain-policy": "tenant-a",
+            "policy-id": "attestation-policy",
+        })
+        .to_string();
+
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/alphav1/certify")
+            .match_body(mockito::Matcher::JsonString(expected_body))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"certificate":"leaf","ca_chain":[]}"#)
+            .create_async()
+            .await;
+
+        let cert_file = create_test_cert();
+        let result = tas_certify(
+            &server.url(),
+            "key",
+            "nonce123",
+            "dGVzdC1ldmlkZW5jZQ==",
+            "amd-sev-snp",
+            None,
+            sample_csr_pem(),
+            "tenant-a",
+            Some("attestation-policy"),
+            cert_file.path().to_path_buf(),
+            &no_retry_config(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.certificate, "leaf");
         mock.assert_async().await;
     }
 
@@ -332,7 +387,7 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
             "nonce": "nonce123",
             "tee-evidence": "dGVzdC1ldmlkZW5jZQ==",
             "csr": expected_csr_b64,
-            "policy-domain": "tenant-a",
+            "domain-policy": "tenant-a",
             "gpu-evidence": gpu_evidence,
         })
         .to_string();
@@ -357,6 +412,7 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
             None,
             sample_csr_pem(),
             "tenant-a",
+            None,
             cert_file.path().to_path_buf(),
             &no_retry_config(),
             Some(&gpu_evidence),
@@ -388,6 +444,7 @@ CzWyyc0J/7PWdmvFVgXukRznKqZp/d4xAaQIKxLcxGwwDNp1
             None,
             sample_csr_pem(),
             "tenant-a",
+            None,
             cert_file.path().to_path_buf(),
             &no_retry_config(),
             None,

@@ -65,6 +65,7 @@ pub struct CertifyArgs {
 /// `common_name`, `sans`) stay top-level while their definitions live here.
 #[derive(Deserialize, Default)]
 pub struct CertifyConfig {
+    domain_policy: Option<String>,
     write_dir: Option<PathBuf>,
     force: Option<bool>,
     common_name: Option<String>,
@@ -80,7 +81,8 @@ enum CertifyMode {
 struct CertifySettings {
     server_uri: String,
     api_key_path: PathBuf,
-    policy_domain: String,
+    domain_policy: String,
+    policy_id: Option<String>,
     cert_path: PathBuf,
     retry_config: RetryConfig,
     #[cfg(feature = "gpu-nvidia")]
@@ -107,11 +109,13 @@ impl CertifySettings {
             .clone()
             .or_else(|| cfg.api_key.clone())
             .unwrap_or_else(|| PathBuf::from("/etc/tas_agent/api-key"));
-        let policy_domain = cli
-            .policy_id
+        let domain_policy = cli
+            .domain_policy
             .clone()
-            .or_else(|| cfg.policy_id.clone())
-            .ok_or_else(|| anyhow!("policy-domain is required for certify flow"))?;
+            .or_else(|| cfg.certify_config.domain_policy.clone())
+            .ok_or_else(|| anyhow!("domain-policy is required for certify flow"))?;
+        // Optional attestation policy id (global --policy-id), sent as `policy-id`.
+        let policy_id = cli.policy_id.clone().or_else(|| cfg.policy_id.clone());
         let cert_path = cli
             .cert_path
             .clone()
@@ -132,7 +136,8 @@ impl CertifySettings {
         Ok(Self {
             server_uri,
             api_key_path,
-            policy_domain,
+            domain_policy,
+            policy_id,
             cert_path,
             retry_config,
             #[cfg(feature = "gpu-nvidia")]
@@ -332,7 +337,8 @@ async fn certify_flow(
         &tee_type,
         renew_cert.as_deref(),
         &csr_pem,
-        &settings.policy_domain,
+        &settings.domain_policy,
+        settings.policy_id.as_deref(),
         settings.cert_path,
         &settings.retry_config,
         #[cfg(feature = "gpu-nvidia")]
@@ -403,6 +409,8 @@ mod tests {
             "/cli/api-key",
             "--policy-id",
             "cli-policy",
+            "--domain-policy",
+            "cli-domain",
             "--cert-path",
             "/cli/root.pem",
             "--max-retries",
@@ -417,6 +425,7 @@ mod tests {
 server_uri = "https://config.example"
 api_key = "/config/api-key"
 policy_id = "config-policy"
+domain_policy = "config-domain"
 cert_path = "/config/root.pem"
 max_retries = 2
 retry_min_backoff_secs = 1
@@ -429,7 +438,8 @@ retry_max_backoff_secs = 10
 
         assert_eq!(settings.server_uri, "https://cli.example");
         assert_eq!(settings.api_key_path, PathBuf::from("/cli/api-key"));
-        assert_eq!(settings.policy_domain, "cli-policy");
+        assert_eq!(settings.domain_policy, "cli-domain");
+        assert_eq!(settings.policy_id.as_deref(), Some("cli-policy"));
         assert_eq!(settings.cert_path, PathBuf::from("/cli/root.pem"));
         assert_eq!(settings.retry_config.max_retries, 9);
         assert_eq!(settings.retry_config.min_backoff_secs, 4);
@@ -443,6 +453,7 @@ retry_max_backoff_secs = 10
             r#"
 server_uri = "http://config.example"
 policy_id = "config-policy"
+domain_policy = "config-domain"
 "#,
         )
         .unwrap();
@@ -454,7 +465,8 @@ policy_id = "config-policy"
             settings.api_key_path,
             PathBuf::from("/etc/tas_agent/api-key")
         );
-        assert_eq!(settings.policy_domain, "config-policy");
+        assert_eq!(settings.domain_policy, "config-domain");
+        assert_eq!(settings.policy_id.as_deref(), Some("config-policy"));
         assert_eq!(
             settings.cert_path,
             PathBuf::from("/etc/tas_agent/root_cert.pem")
@@ -472,7 +484,7 @@ policy_id = "config-policy"
         assert_eq!(missing_server.to_string(), "server URI is required");
 
         let malformed_server = CertifySettings::resolve(
-            &parse_cli(&["--server-uri", "config.example", "--policy-id", "policy"]),
+            &parse_cli(&["--server-uri", "config.example"]),
             &Config::default(),
         )
         .err()
@@ -489,7 +501,7 @@ policy_id = "config-policy"
         .unwrap();
         assert_eq!(
             missing_policy.to_string(),
-            "policy-domain is required for certify flow"
+            "domain-policy is required for certify flow"
         );
     }
 
@@ -537,8 +549,8 @@ policy_id = "config-policy"
             let mut args = vec![
                 "--server-uri",
                 "https://config.example",
-                "--policy-id",
-                "policy",
+                "--domain-policy",
+                "domain",
             ];
             if cli_disabled {
                 args.push("--no-gpu");

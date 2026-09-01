@@ -36,6 +36,13 @@ agent's CSR only contributes the public key, CN, and any requested SANs; the
 agent never asserts its own identity, and TAS remains authoritative over what it
 signs.
 
+The request carries two policy inputs. The **domain policy** (`--domain-policy`
+or the `domain_policy` config key) is **required** and is sent as the
+`domain-policy` field. An optional **policy id** (`--policy-id` or
+the `policy_id` config key) is sent as the `policy-id` field — the same field
+the standard key-fetch request uses — and is omitted when not provided. Both are
+global flags, so they may appear before or after the `certify` token.
+
 ## Building
 
 The feature is gated behind the `certify` Cargo feature and is **off by
@@ -119,7 +126,8 @@ These shared flags also apply:
 | `-c`, `--config <FILE>` | file | Path to the config file (default: `/etc/tas_agent/config.toml`). |
 | `--server-uri <URI>` | URI | TAS REST service URI. Must start with `http://` or `https://`. **Required.** |
 | `--api-key <FILE>` | file | Path to the API key file (default: `/etc/tas_agent/api-key`). |
-| `--policy-id <ID>` | ID | Policy domain to request. **Required** for the certify flow. |
+| `--domain-policy <DOMAIN>` | domain | Domain policy to request, sent as `domain-policy`. **Required** for the certify flow. Global — may appear before or after the `certify` token. |
+| `--policy-id <ID>` | ID | Optional policy id, sent as `policy-id` (the same field the standard key-fetch request uses). Omitted when unset. |
 | `--cert-path <FILE>` | file | CA root certificate that signs the TAS service certificate (default: `/etc/tas_agent/root_cert.pem`). |
 | `--max-retries <N>` | integer | Maximum HTTP retry attempts (default: 3). |
 | `--retry-min-backoff-secs <SECS>` | integer | Minimum retry backoff in seconds (default: 1). |
@@ -133,6 +141,9 @@ precedence over config values. The mode is always chosen with the `certify`
 subcommand and its command-line options.
 
 ```toml
+# Domain policy to request (required; equivalent to --domain-policy)
+domain_policy = "..."
+
 # Directory for certificate materials (equivalent to --write-dir)
 write_dir = "/var/lib/tas_agent/certs"
 
@@ -147,8 +158,10 @@ write_dir = "/var/lib/tas_agent/certs"
 # sans = ["DNS:host.example.com", "IP:10.0.0.1", "URI:spiffe://td/workload"]
 ```
 
-The existing `server_uri`, `api_key`, `policy_id`, `cert_path`, and retry
-settings are shared with the normal key-fetch flow.
+The existing `server_uri`, `api_key`, `cert_path`, and retry settings are shared
+with the normal key-fetch flow. `policy_id` is shared too, but for the certify
+flow it is **optional** and is sent as the `policy-id` field; the required domain
+is supplied separately via `domain_policy` / `--domain-policy`.
 
 ## GPU attestation
 
@@ -188,10 +201,15 @@ given.
 Generates a new key, requests a certificate, and writes all materials to the
 write directory.
 
+The domain policy is required: pass `--domain-policy <DOMAIN>` (global, so it may
+appear before or after `certify`) or set `domain_policy` in `config.toml`. The
+remaining examples assume it is set in the config file.
+
 ```bash
 sudo target/debug/tas_agent -d \
   -c ~/config.toml \
   certify \
+  --domain-policy my-domain \
   --write-dir /var/lib/tas_agent/certs
 ```
 

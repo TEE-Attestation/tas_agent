@@ -33,3 +33,14 @@ policy_id = "..."
 # Enable initramfs-tools passfifo watcher mode for automatic LUKS unlock
 # (requires the 'passfifo' feature to be enabled at build time)
 # passfifo = false
+
+# --- Certificate issuance/renewal (certify) — EXPERIMENTAL ---
+# Requires the 'certify' feature at build time. See
+# docs/experimental/certify.md. For the certify flow, domain_policy is required
+# and the policy_id above becomes optional (sent as the 'policy-id' field).
+#
+# Domain policy to request (equivalent to --domain-policy)
+# domain_policy = "..."
+#
+# Directory for certificate materials (equivalent to --write-dir)
+# write_dir = "/var/lib/tas_agent/certs"
