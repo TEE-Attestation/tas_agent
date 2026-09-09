@@ -15,9 +15,6 @@ The TAS Server is configured such that a CVM only receives the secrets, such as 
 
 TAS Agent uses the Linux [configfs/tsm](https://www.kernel.org/doc/Documentation/ABI/testing/configfs-tsm) subsystem to collect CPU attestation reports. This kernel interface works the same way for all supported CPU types, so the agent does not need vendor-specific code. It currently supports AMD SEV-SNP and Intel TDX TEE attestation. Optional NVIDIA GPU attestation can be enabled at build time with the `gpu-nvidia` feature (see [With GPU Attestation Support](#with-gpu-attestation-support)).
 
-
-
-
 ## Use Cases
 
 - **[LUKS volume unlocking](docs/LUKS.md)** — Automatically unlock
@@ -41,7 +38,7 @@ The `tas_agent` application is configured via a configuration file (`config.toml
 Run the `tas_agent` program with a config file:
 
 ```bash
-sudo ./target/debug/tas_agent -c config/config.toml
+sudo ./target/release/tas_agent -c config/config.toml
 ```
 
 Example output:
@@ -50,7 +47,6 @@ Example output:
 Policy-ID: 771e76e7924348899ef751d0754c9060dd805928d03043f29a065275f4f883c8
 Value: "30786465616462656566"
 ```
-
 
 ## Configuration
 
