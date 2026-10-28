@@ -139,13 +139,15 @@ pub async fn tas_get_nonce(
         Ok(response) => {
             if response.status().is_success() {
                 match response.json::<Value>().await {
-                    Ok(json) => {
-                        if let Some(nonce) = json.get("nonce") {
-                            Ok(nonce.to_string())
-                        } else {
-                            Err("Error: 'nonce' field not found in response".to_string())
-                        }
-                    }
+                    // Use the bare string value; Value::to_string() would keep the JSON quotes.
+                    Ok(json) => match json.get("nonce") {
+                        Some(Value::String(nonce)) => Ok(nonce.clone()),
+                        Some(other) => Err(format!(
+                            "Error: 'nonce' field is not a string in response: {}",
+                            other
+                        )),
+                        None => Err("Error: 'nonce' field not found in response".to_string()),
+                    },
                     Err(err) => Err(format!("Error parsing JSON response: {}", err)),
                 }
             } else {
@@ -337,7 +339,29 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
         let cert_path = cert_file.path().to_path_buf();
         let result = tas_get_nonce(&server_uri, api_key, cert_path, &no_retry_config()).await;
 
-        assert_eq!(result.unwrap(), "\"abc123\"");
+        assert_eq!(result.unwrap(), "abc123");
+    }
+
+    #[tokio::test]
+    async fn test_tas_get_nonce_rejects_non_string_nonce() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/kb/v0/get_nonce")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"nonce": 12345}"#)
+            .create_async()
+            .await;
+
+        let server_uri = server.url();
+        let cert_file = create_test_cert();
+        let cert_path = cert_file.path().to_path_buf();
+        let result =
+            tas_get_nonce(&server_uri, "test_api_key", cert_path, &no_retry_config()).await;
+
+        assert!(result
+            .unwrap_err()
+            .contains("'nonce' field is not a string"));
     }
 
     #[tokio::test]
@@ -1024,7 +1048,7 @@ MRYTnHVgon3F8Lk6ZsKGQ27CXYFMt9iIUAmkg6LmbJDqNR8NLqigo+Nfhq4rPUfP
             &no_retry_config(),
         )
         .await;
-        assert_eq!(result.unwrap(), r#""deadbeef""#);
+        assert_eq!(result.unwrap(), "deadbeef");
     }
 
     #[tokio::test]
